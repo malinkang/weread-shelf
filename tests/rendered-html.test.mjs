@@ -71,6 +71,12 @@ test("keeps a synced WeRead shelf local, private-safe, and optional", async () =
   assert.match(syncScript, /book\.secret === 0/);
   assert.match(syncScript, /shelf\.archive/);
   assert.match(syncScript, /WEREAD_BOOKS_PER_SHELF/);
+  assert.match(syncScript, /WEREAD_SYNC_NOTES/);
+  assert.match(syncScript, /WEREAD_NOTES_BOOK_LIMIT/);
+  assert.match(syncScript, /\/user\/notebooks/);
+  assert.match(syncScript, /\/book\/bookmarklist/);
+  assert.match(syncScript, /\/review\/list\/mine/);
+  assert.match(syncScript, /notes\.json/);
   assert.match(syncScript, /shelves,/);
   assert.match(loader, /weread-catalog\.json/);
   assert.match(loader, /fallbackShelves/);

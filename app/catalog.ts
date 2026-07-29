@@ -57,6 +57,11 @@ export type CatalogBook = {
   shelfGroupId?: string;
   shelfGroupName?: string;
   shelfGroupIndex?: number;
+  notesPath?: string;
+  noteCount?: number;
+  reviewCount?: number;
+  bookmarkCount?: number;
+  totalNoteCount?: number;
 };
 
 export const catalog: CatalogBook[] = ([

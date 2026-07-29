@@ -7,10 +7,12 @@ import {
   deriveCoverPalette,
   highResolutionCoverUrl,
 } from "./cover-tools.mjs";
+import { normalizeBookNotes, notebookTotalCount } from "./notes-tools.mjs";
 
 const gateway = "https://i.weread.qq.com/api/agent/gateway";
 const skillVersion = "1.0.4";
 const defaultBooksPerShelf = 8;
+const defaultNotesBookLimit = 5;
 const projectRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
@@ -189,7 +191,7 @@ async function downloadCover(sourceUrl, bookId, fallbackPalette) {
   };
 }
 
-function createCatalogBook(shelfBook, detail, coverAsset, shelfGroup) {
+function createCatalogBook(shelfBook, detail, coverAsset, shelfGroup, notesAsset) {
   const identity = String(shelfBook.bookId);
   const seed = hash(identity);
   const palette = coverAsset?.palette ?? palettes[seed % palettes.length];
@@ -240,7 +242,144 @@ function createCatalogBook(shelfBook, detail, coverAsset, shelfGroup) {
     shelfGroupId: shelfGroup.id,
     shelfGroupName: shelfGroup.name,
     shelfGroupIndex: shelfGroup.index,
+    notesPath: notesAsset?.notesPath,
+    noteCount: notesAsset?.highlightCount,
+    reviewCount: notesAsset?.reviewCount,
+    bookmarkCount: notesAsset?.bookmarkCount,
+    totalNoteCount: notesAsset?.totalCount,
   };
+}
+
+function envFlag(name, fallback = false) {
+  const value = process.env[name];
+  if (value === undefined) return fallback;
+  return /^(1|true|yes|on)$/i.test(value);
+}
+
+async function fetchAllNotebooks() {
+  const books = [];
+  const seenCursors = new Set();
+  let lastSort;
+
+  while (true) {
+    const payload = await wereadApi("/user/notebooks", {
+      count: 100,
+      ...(lastSort === undefined ? {} : { lastSort }),
+    });
+    books.push(...(payload.books ?? []));
+    if (payload.hasMore !== 1) {
+      return {
+        books,
+        totalBookCount: Number(payload.totalBookCount ?? books.length),
+        totalNoteCount: Number(payload.totalNoteCount ?? 0),
+      };
+    }
+
+    const nextCursor = payload.books?.at(-1)?.sort;
+    if (nextCursor === undefined || seenCursors.has(String(nextCursor))) {
+      throw new Error("WeRead notebook pagination returned an invalid cursor");
+    }
+    seenCursors.add(String(nextCursor));
+    lastSort = nextCursor;
+  }
+}
+
+async function fetchAllPersonalReviews(bookId) {
+  const reviews = [];
+  const seenCursors = new Set();
+  let synckey = 0;
+
+  while (true) {
+    const payload = await wereadApi("/review/list/mine", {
+      bookid: String(bookId),
+      count: 100,
+      synckey,
+    });
+    reviews.push(...(payload.reviews ?? []));
+    if (payload.hasMore !== 1) return reviews;
+
+    const nextCursor = Number(payload.synckey);
+    if (!Number.isFinite(nextCursor) || seenCursors.has(String(nextCursor))) {
+      throw new Error(`WeRead review pagination stalled for book ${bookId}`);
+    }
+    seenCursors.add(String(nextCursor));
+    synckey = nextCursor;
+  }
+}
+
+async function syncPersonalNotes(sourceBooks) {
+  if (!envFlag("WEREAD_SYNC_NOTES")) return new Map();
+
+  const requestedLimit = Number.parseInt(
+    process.env.WEREAD_NOTES_BOOK_LIMIT ?? "",
+    10,
+  );
+  const notesBookLimit = Number.isFinite(requestedLimit)
+    ? Math.min(30, Math.max(1, requestedLimit))
+    : defaultNotesBookLimit;
+  const notebooks = await fetchAllNotebooks();
+  const notebooksByBookId = new Map(
+    notebooks.books.map((notebook) => [String(notebook.bookId), notebook]),
+  );
+  const candidates = sourceBooks
+    .map((sourceBook) => ({
+      sourceBook,
+      notebook: notebooksByBookId.get(String(sourceBook.bookId)),
+    }))
+    .filter(({ notebook }) => notebook && notebookTotalCount(notebook) > 0)
+    .sort(
+      (left, right) =>
+        notebookTotalCount(right.notebook) - notebookTotalCount(left.notebook),
+    )
+    .slice(0, notesBookLimit);
+
+  const synced = await mapWithConcurrency(
+    candidates,
+    2,
+    async ({ sourceBook, notebook }) => {
+      const bookId = String(sourceBook.bookId);
+      try {
+        const [bookmarkPayload, reviewItems] = await Promise.all([
+          wereadApi("/book/bookmarklist", { bookId }),
+          fetchAllPersonalReviews(bookId),
+        ]);
+        const notes = normalizeBookNotes({
+          bookId,
+          notebook,
+          bookmarkPayload,
+          reviewItems,
+        });
+        const directoryName = safePathSegment(bookId);
+        const directory = path.join(coverRoot, directoryName);
+        const notesPath = `books/weread/${directoryName}/notes.json`;
+        await mkdir(directory, { recursive: true });
+        await writeFile(
+          path.join(directory, "notes.json"),
+          `${JSON.stringify(notes, null, 2)}\n`,
+        );
+        return {
+          bookId,
+          notesPath,
+          totalCount: notes.counts.total,
+          highlightCount: notes.counts.highlights,
+          reviewCount: notes.counts.thoughts,
+          bookmarkCount: notes.counts.bookmarks,
+        };
+      } catch (error) {
+        if (error instanceof UpgradeRequiredError) throw error;
+        console.warn(`Skipping notes for ${sourceBook.title}: ${error.message}`);
+        return null;
+      }
+    },
+  );
+
+  const notesByBookId = new Map(
+    synced.filter(Boolean).map((notesAsset) => [notesAsset.bookId, notesAsset]),
+  );
+  console.log(
+    `Synced personal highlights and thoughts for ${notesByBookId.size} of ${candidates.length} selected books`,
+  );
+  return notesByBookId;
 }
 
 async function main() {
@@ -344,6 +483,7 @@ async function main() {
   const preparedBooksById = new Map(
     preparedBooks.map((prepared) => [String(prepared.shelfBook.bookId), prepared]),
   );
+  const notesByBookId = await syncPersonalNotes(uniqueSourceBooks);
   const books = groupedEntries.map(({ shelfBook, shelfGroup }) => {
     const prepared = preparedBooksById.get(String(shelfBook.bookId));
     return createCatalogBook(
@@ -351,6 +491,7 @@ async function main() {
       prepared?.detail ?? shelfBook,
       prepared?.coverAsset,
       shelfGroup,
+      notesByBookId.get(String(shelfBook.bookId)),
     );
   });
   const shelves = shelfGroups.map((group, groupIndex) => ({
@@ -371,6 +512,7 @@ async function main() {
         source: "weread",
         generatedAt: new Date().toISOString(),
         count: books.length,
+        notesBookCount: notesByBookId.size,
         shelves,
         books,
       },
