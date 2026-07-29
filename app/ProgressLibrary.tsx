@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { catalog as fallbackCatalog } from "./catalog";
+import { HighlightReader } from "./HighlightReader";
 import { loadLocalCatalog, type CatalogShelf } from "./load-catalog";
 import { arrangeBooksForShelves, createCabinetLayout } from "./shelf-layout";
 import { ShelfEngine, type ShelfMode } from "./ShelfEngine";
@@ -30,6 +31,7 @@ export function ProgressLibrary() {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [mode, setMode] = useState<ShelfMode>("browse");
   const [ready, setReady] = useState(false);
+  const [readerOpen, setReaderOpen] = useState(false);
   const [status, setStatus] = useState("Preparing the complete catalog");
 
   const activeBook = books[activeIndex] ?? books[0] ?? fallbackCatalog[0];
@@ -74,6 +76,7 @@ export function ProgressLibrary() {
         onMode: (nextMode, index) => {
           setMode(nextMode);
           setSelectedIndex(index);
+          if (nextMode === "browse") setReaderOpen(false);
         },
         onStatus: setStatus,
         onReady: () => setReady(true),
@@ -283,6 +286,26 @@ export function ProgressLibrary() {
                 </span>
                 <span aria-hidden="true">↗</span>
               </a>
+
+              {selectedBook.notesPath ? (
+                <button
+                  type="button"
+                  className="notes-link"
+                  data-testid="open-highlight-reader"
+                  onClick={() => setReaderOpen(true)}
+                >
+                  <span>
+                    翻开我的划线
+                    <small>
+                      {selectedBook.noteCount ?? 0} 条划线
+                      {selectedBook.reviewCount
+                        ? ` · ${selectedBook.reviewCount} 条想法`
+                        : ""}
+                    </small>
+                  </span>
+                  <span aria-hidden="true">打开</span>
+                </button>
+              ) : null}
             </div>
 
             <div className="focus-controls" aria-label="Inspection controls">
@@ -299,6 +322,14 @@ export function ProgressLibrary() {
           </div>
         ) : null}
       </aside>
+
+      {readerOpen && selectedBook ? (
+        <HighlightReader
+          key={selectedBook.id}
+          book={selectedBook}
+          onClose={() => setReaderOpen(false)}
+        />
+      ) : null}
 
       <div
         className="experience-status"

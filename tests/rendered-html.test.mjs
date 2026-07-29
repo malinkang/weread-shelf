@@ -82,6 +82,8 @@ test("keeps a synced WeRead shelf local, private-safe, and optional", async () =
   assert.match(loader, /fallbackShelves/);
   assert.match(interfaceSource, /loadLocalCatalog/);
   assert.match(interfaceSource, /data-testid="shelf-switcher"/);
+  assert.match(interfaceSource, /data-testid="open-highlight-reader"/);
+  assert.match(interfaceSource, /HighlightReader/);
   assert.match(gitignore, /\/public\/weread-catalog\.json/);
   assert.match(gitignore, /\/public\/books\/weread\//);
   assert.match(packageJson, /"sync:weread"/);
