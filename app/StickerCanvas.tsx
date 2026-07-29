@@ -13,6 +13,7 @@ import {
   stickerAssetUrl,
   stickerPack,
 } from "./stickers";
+import { PeelableSticker } from "./PeelableSticker";
 
 type DragState = {
   id: string;
@@ -83,7 +84,7 @@ export function StickerCanvas({ bookId, pageId, editing }: StickerCanvasProps) {
   };
 
   const startDrag = (
-    event: ReactPointerEvent<HTMLButtonElement>,
+    event: ReactPointerEvent<HTMLElement>,
     sticker: PlacedSticker,
   ) => {
     if (!editing) return;
@@ -100,9 +101,11 @@ export function StickerCanvas({ bookId, pageId, editing }: StickerCanvasProps) {
     setSelectedId(sticker.id);
   };
 
-  const dragSticker = (event: ReactPointerEvent<HTMLButtonElement>) => {
+  const dragSticker = (event: ReactPointerEvent<HTMLElement>) => {
     const drag = dragRef.current;
-    const layer = event.currentTarget.parentElement;
+    const layer = event.currentTarget.closest<HTMLElement>(
+      ".sticker-canvas__layer",
+    );
     if (!editing || !drag || drag.pointerId !== event.pointerId || !layer) return;
     const bounds = layer.getBoundingClientRect();
     const x = clamp(
@@ -122,7 +125,7 @@ export function StickerCanvas({ bookId, pageId, editing }: StickerCanvasProps) {
     );
   };
 
-  const stopDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+  const stopDrag = (event: ReactPointerEvent<HTMLElement>) => {
     if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
   };
 
@@ -141,28 +144,76 @@ export function StickerCanvas({ bookId, pageId, editing }: StickerCanvasProps) {
           );
           if (!definition) return null;
           return (
-            <button
+            <div
               key={sticker.id}
-              type="button"
               className={`placed-sticker ${
                 editing && sticker.id === selectedId ? "is-selected" : ""
               }`}
-              aria-label={`${definition.label}贴纸`}
-              tabIndex={editing ? 0 : -1}
+              role={editing && sticker.id !== selectedId ? "button" : undefined}
+              aria-label={
+                editing && sticker.id !== selectedId
+                  ? `${definition.label}贴纸`
+                  : undefined
+              }
+              tabIndex={editing && sticker.id !== selectedId ? 0 : -1}
               style={{
                 left: `${sticker.x}%`,
                 top: `${sticker.y}%`,
                 zIndex: sticker.zIndex,
                 transform: `translate(-50%, -50%) rotate(${sticker.rotation}deg) scale(${sticker.scale})`,
               }}
-              onPointerDown={(event) => startDrag(event, sticker)}
+              onPointerDown={(event) => {
+                if (
+                  event.target instanceof Element &&
+                  event.target.closest(".peelable-sticker")
+                ) {
+                  return;
+                }
+                startDrag(event, sticker);
+              }}
               onPointerMove={dragSticker}
               onPointerUp={stopDrag}
               onPointerCancel={stopDrag}
+              onKeyDown={(event) => {
+                if (
+                  sticker.id !== selectedId &&
+                  (event.key === "Enter" || event.key === " ")
+                ) {
+                  event.preventDefault();
+                  setSelectedId(sticker.id);
+                }
+              }}
             >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={stickerAssetUrl(definition.src)} alt="" draggable={false} />
-            </button>
+              {editing && sticker.id === selectedId ? (
+                <PeelableSticker
+                  label={definition.label}
+                  source={stickerAssetUrl(definition.src)}
+                />
+              ) : (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={stickerAssetUrl(definition.src)}
+                  alt=""
+                  draggable={false}
+                />
+              )}
+              {editing && sticker.id === selectedId ? (
+                <button
+                  type="button"
+                  className="placed-sticker__move"
+                  aria-label={`移动${definition.label}贴纸`}
+                  onPointerDown={(event) => {
+                    event.stopPropagation();
+                    startDrag(event, sticker);
+                  }}
+                  onPointerMove={dragSticker}
+                  onPointerUp={stopDrag}
+                  onPointerCancel={stopDrag}
+                >
+                  <span aria-hidden="true">✣</span>
+                </button>
+              ) : null}
+            </div>
           );
         })}
       </div>
@@ -183,7 +234,7 @@ export function StickerCanvas({ bookId, pageId, editing }: StickerCanvasProps) {
             ))}
           </div>
           <div className="sticker-editor__selection" aria-label="调整选中贴纸">
-            <span>{selected ? "调整贴纸" : "先选一枚贴纸"}</span>
+            <span>{selected ? "拖边缘撕起 · 十字手柄移动" : "先选一枚贴纸"}</span>
             <button
               type="button"
               disabled={!selected}

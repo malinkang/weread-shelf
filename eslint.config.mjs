@@ -15,6 +15,7 @@ const eslintConfig = defineConfig([
     "dist/**",
     "next-env.d.ts",
     "public/assets/stripe-press/source/**",
+    "public/vendor/**",
   ]),
 ]);
 

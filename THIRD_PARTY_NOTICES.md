@@ -30,3 +30,13 @@ JavaScript, or 3D assets.
 keep separately licensed local files there for private development, but those
 files are not part of this repository and must not be included in a release or
 deployment without permission from the relevant rights holders.
+## Sticker Forge
+
+The selected-sticker peel interaction includes the standalone Sticker Forge
+bundle from [CatsJuice/sticker-forge](https://github.com/CatsJuice/sticker-forge),
+revision `a1b1853564651fb2fce4d8e637e751fc076066ad`. Sticker Forge is licensed
+under the MIT License, Copyright (c) 2026 CatsJuice. A copy of its license is
+distributed at `public/vendor/sticker-forge/LICENSE`.
+
+The standalone bundle includes Three.js 0.185.1, licensed under the MIT License,
+Copyright 2010-2026 Three.js Authors.
