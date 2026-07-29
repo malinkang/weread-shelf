@@ -1,4 +1,3 @@
 {
-  "buildCommand": "pnpm sync:weread && pnpm build",
-  "outputDirectory": "dist"
+  "buildCommand": "pnpm sync:weread && pnpm build"
 }
