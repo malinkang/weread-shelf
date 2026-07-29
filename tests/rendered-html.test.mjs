@@ -97,6 +97,7 @@ test("keeps a synced WeRead shelf local, private-safe, and optional", async () =
   assert.match(interfaceSource, /data-testid="open-highlight-reader"/);
   assert.match(interfaceSource, /HighlightReader/);
   assert.match(readerSource, /data-testid="toggle-sticker-editor"/);
+  assert.match(readerSource, /data-testid="export-share-card"/);
   assert.match(readerSource, /editing=\{decorating\}/);
   assert.match(stickerDataSource, /localStorage/);
   assert.match(stickerSource, /setPointerCapture/);

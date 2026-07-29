@@ -14,6 +14,8 @@ import {
   type WeReadBookNotes,
 } from "./reading-notes";
 import { StickerCanvas } from "./StickerCanvas";
+import { downloadShareCard } from "./share-card";
+import { loadStickerLayout } from "./stickers";
 
 const highlightColors = ["#e9c861", "#efb08a", "#91cbbd", "#aebee4", "#d0abd8"];
 
@@ -29,6 +31,8 @@ export function HighlightReader({ book, onClose }: HighlightReaderProps) {
   );
   const [pageIndex, setPageIndex] = useState(0);
   const [decorating, setDecorating] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const pages = useMemo(() => (notes ? createReadingPages(notes) : []), [notes]);
   const page = pages[pageIndex];
@@ -198,9 +202,40 @@ export function HighlightReader({ book, onClose }: HighlightReaderProps) {
         >
           {decorating ? "完成装饰" : "装饰这一页"}
         </button>
+        <button
+          type="button"
+          className="highlight-reader__share"
+          data-testid="export-share-card"
+          disabled={decorating || !page || exporting}
+          onClick={() => {
+            if (!page) return;
+            const bookId = book.sourceId ?? book.id;
+            setExporting(true);
+            setExportError(null);
+            void downloadShareCard(
+              {
+                book,
+                page,
+                stickers: loadStickerLayout(bookId, page.id),
+              },
+              pageIndex,
+            )
+              .catch((reason: unknown) => {
+                setExportError(
+                  reason instanceof Error ? reason.message : "分享卡生成失败",
+                );
+              })
+              .finally(() => setExporting(false));
+          }}
+        >
+          {exporting ? "生成中…" : "导出分享卡"}
+        </button>
         <a href={book.url} target="_blank" rel="noreferrer">
           去微信读书继续阅读 <span aria-hidden="true">↗</span>
         </a>
+        <span className="highlight-reader__export-status" aria-live="polite">
+          {exportError ?? ""}
+        </span>
       </footer>
     </section>
   );

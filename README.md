@@ -11,6 +11,7 @@ navigator to jump directly to a collection.
 - Syncs public books from every WeRead bookshelf group
 - Optionally syncs personal highlights and thoughts for the five most annotated displayed books
 - Lets you decorate individual highlight pages and peel the selected sticker with Sticker Forge
+- Exports a local 1080 x 1440 reading card with the current highlight, thought, and stickers
 - Downloads high-resolution covers and derives matching spine colors locally
 - Keeps private WeRead entries and credentials out of Git
 - Supports vertical shelf paging, direct shelf navigation, and click-to-open books

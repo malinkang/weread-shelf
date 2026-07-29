@@ -1409,7 +1409,7 @@ canvas:focus-visible {
 
 .highlight-reader__footer {
   display: grid;
-  grid-template-columns: auto auto auto auto 1fr;
+  grid-template-columns: auto auto auto auto auto 1fr;
   gap: 17px;
   align-items: center;
   padding: 17px clamp(24px, 4vw, 64px) max(17px, env(safe-area-inset-bottom));
@@ -1460,6 +1460,18 @@ canvas:focus-visible {
 .highlight-reader__footer .highlight-reader__decorate[aria-pressed="true"] {
   background: var(--ink);
   color: var(--paper-light);
+}
+
+.highlight-reader__footer .highlight-reader__share {
+  border-color: rgba(37, 35, 31, 0.42);
+}
+
+.highlight-reader__export-status {
+  position: absolute;
+  right: clamp(24px, 4vw, 64px);
+  bottom: calc(100% + 8px);
+  color: #9d3e31;
+  font-size: 9px;
 }
 
 @keyframes reader-reveal {
@@ -1761,7 +1773,7 @@ canvas:focus-visible {
   }
 
   .highlight-reader__footer {
-    grid-template-columns: auto 1fr auto auto;
+    grid-template-columns: auto 1fr auto;
     gap: 8px;
     padding: 10px 13px max(10px, env(safe-area-inset-bottom));
   }
@@ -1780,10 +1792,20 @@ canvas:focus-visible {
 
   .highlight-reader__footer a {
     grid-column: 1 / -1;
-    grid-row: 2;
+    grid-row: 3;
     justify-self: stretch;
     padding: 8px;
     text-align: center;
+  }
+
+  .highlight-reader__footer .highlight-reader__decorate {
+    grid-column: 1 / 3;
+    grid-row: 2;
+  }
+
+  .highlight-reader__footer .highlight-reader__share {
+    grid-column: 3;
+    grid-row: 2;
   }
 
   .sticker-editor {
