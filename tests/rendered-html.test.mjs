@@ -58,11 +58,23 @@ test("exports the complete editorial bookshelf shell", async () => {
 });
 
 test("keeps a synced WeRead shelf local, private-safe, and optional", async () => {
-  const [syncScript, loader, interfaceSource, gitignore, packageJson] =
+  const [
+    syncScript,
+    loader,
+    interfaceSource,
+    readerSource,
+    stickerSource,
+    stickerDataSource,
+    gitignore,
+    packageJson,
+  ] =
     await Promise.all([
       readFile(new URL("../scripts/sync-weread.mjs", import.meta.url), "utf8"),
       readFile(new URL("../app/load-catalog.ts", import.meta.url), "utf8"),
       readFile(new URL("../app/ProgressLibrary.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../app/HighlightReader.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../app/StickerCanvas.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../app/stickers.ts", import.meta.url), "utf8"),
       readFile(new URL("../.gitignore", import.meta.url), "utf8"),
       readFile(new URL("../package.json", import.meta.url), "utf8"),
     ]);
@@ -84,6 +96,13 @@ test("keeps a synced WeRead shelf local, private-safe, and optional", async () =
   assert.match(interfaceSource, /data-testid="shelf-switcher"/);
   assert.match(interfaceSource, /data-testid="open-highlight-reader"/);
   assert.match(interfaceSource, /HighlightReader/);
+  assert.match(readerSource, /data-testid="toggle-sticker-editor"/);
+  assert.match(readerSource, /editing=\{decorating\}/);
+  assert.match(stickerDataSource, /localStorage/);
+  assert.match(stickerSource, /setPointerCapture/);
+  assert.match(stickerSource, /scale:/);
+  assert.match(stickerSource, /rotation:/);
+  assert.match(stickerSource, /zIndex/);
   assert.match(gitignore, /\/public\/weread-catalog\.json/);
   assert.match(gitignore, /\/public\/books\/weread\//);
   assert.match(packageJson, /"sync:weread"/);

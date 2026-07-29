@@ -13,6 +13,7 @@ import {
   loadBookNotes,
   type WeReadBookNotes,
 } from "./reading-notes";
+import { StickerCanvas } from "./StickerCanvas";
 
 const highlightColors = ["#e9c861", "#efb08a", "#91cbbd", "#aebee4", "#d0abd8"];
 
@@ -27,6 +28,7 @@ export function HighlightReader({ book, onClose }: HighlightReaderProps) {
     book.notesPath ? null : "这本书还没有同步划线",
   );
   const [pageIndex, setPageIndex] = useState(0);
+  const [decorating, setDecorating] = useState(false);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const pages = useMemo(() => (notes ? createReadingPages(notes) : []), [notes]);
   const page = pages[pageIndex];
@@ -46,11 +48,14 @@ export function HighlightReader({ book, onClose }: HighlightReaderProps) {
   useEffect(() => {
     closeButtonRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-      if (event.key === "ArrowLeft") {
+      if (event.key === "Escape") {
+        if (decorating) setDecorating(false);
+        else onClose();
+      }
+      if (!decorating && event.key === "ArrowLeft") {
         setPageIndex((current) => Math.max(0, current - 1));
       }
-      if (event.key === "ArrowRight") {
+      if (!decorating && event.key === "ArrowRight") {
         setPageIndex((current) =>
           Math.min(Math.max(0, pages.length - 1), current + 1),
         );
@@ -58,7 +63,7 @@ export function HighlightReader({ book, onClose }: HighlightReaderProps) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose, pages.length]);
+  }, [decorating, onClose, pages.length]);
 
   const readerStyle = page
     ? ({
@@ -117,7 +122,10 @@ export function HighlightReader({ book, onClose }: HighlightReaderProps) {
         ) : null}
 
         {page ? (
-          <article className="reading-sheet" key={page.id}>
+          <article
+            className={`reading-sheet ${decorating ? "is-decorating" : ""}`}
+            key={page.id}
+          >
             <div className="reading-sheet__folio">
               <span>{String(pageIndex + 1).padStart(3, "0")}</span>
               <span>{String(pages.length).padStart(3, "0")}</span>
@@ -140,6 +148,12 @@ export function HighlightReader({ book, onClose }: HighlightReaderProps) {
               <span>{page.kind === "highlight" ? "划线" : "想法"}</span>
               {page.createdAt ? <time>{page.createdAt}</time> : null}
             </footer>
+            <StickerCanvas
+              key={`${book.sourceId ?? book.id}:${page.id}`}
+              bookId={book.sourceId ?? book.id}
+              pageId={page.id}
+              editing={decorating}
+            />
           </article>
         ) : null}
       </div>
@@ -147,8 +161,11 @@ export function HighlightReader({ book, onClose }: HighlightReaderProps) {
       <footer className="highlight-reader__footer">
         <button
           type="button"
-          disabled={pageIndex <= 0}
-          onClick={() => setPageIndex((current) => Math.max(0, current - 1))}
+          disabled={decorating || pageIndex <= 0}
+          onClick={() => {
+            setDecorating(false);
+            setPageIndex((current) => Math.max(0, current - 1));
+          }}
         >
           上一条
         </button>
@@ -159,14 +176,27 @@ export function HighlightReader({ book, onClose }: HighlightReaderProps) {
         </div>
         <button
           type="button"
-          disabled={!pages.length || pageIndex >= pages.length - 1}
-          onClick={() =>
+          disabled={
+            decorating || !pages.length || pageIndex >= pages.length - 1
+          }
+          onClick={() => {
+            setDecorating(false);
             setPageIndex((current) =>
               Math.min(Math.max(0, pages.length - 1), current + 1),
-            )
-          }
+            );
+          }}
         >
           下一条
+        </button>
+        <button
+          type="button"
+          className="highlight-reader__decorate"
+          data-testid="toggle-sticker-editor"
+          aria-pressed={decorating}
+          disabled={!page}
+          onClick={() => setDecorating((current) => !current)}
+        >
+          {decorating ? "完成装饰" : "装饰这一页"}
         </button>
         <a href={book.url} target="_blank" rel="noreferrer">
           去微信读书继续阅读 <span aria-hidden="true">↗</span>
