@@ -49,3 +49,7 @@ next-env.d.ts
 # Optional third-party edition assets are intentionally not distributed.
 # Contributor-owned covers belong under /public/books/ instead.
 /public/assets/stripe-press/
+
+# Personal WeRead data is generated locally and must never be committed.
+/public/weread-catalog.json
+/public/books/weread/

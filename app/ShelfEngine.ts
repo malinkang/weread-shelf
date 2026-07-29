@@ -31,6 +31,15 @@ import {
   addStripeFoilBlend,
   stripeFoilSettings,
 } from "./stripe-foil";
+import {
+  adjacentShelfBookIndex,
+  cabinetBookInsetZ,
+  cabinetRowSpacing,
+  centeredShelfBookIndex,
+  createCabinetLayout,
+  type CabinetLayout,
+  type ShelfBookPlacement,
+} from "./shelf-layout";
 import { siteConfig } from "./site-config";
 
 export type ShelfMode = "browse" | "focusing" | "inspect" | "returning";
@@ -57,6 +66,7 @@ type RuntimeBook = {
   titleDecal: THREE.Mesh;
   pickProxy: THREE.Mesh;
   livingMaterial?: THREE.ShaderMaterial;
+  row: number;
   x: number;
   width: number;
   pose: BookPose;
@@ -66,7 +76,6 @@ type RuntimeBook = {
   textures: THREE.Texture[];
 };
 
-const shelfTop = 0.34;
 const browseCamera = new THREE.Vector3(0, 1.42, 6.65);
 const browseTarget = new THREE.Vector3(0, 1.28, 0.15);
 const pageColor = new THREE.Color("#e9dfca");
@@ -171,7 +180,7 @@ export class ShelfEngine {
   private mode: ShelfMode = "browse";
   private selectedIndex: number | null = null;
   private activeIndex = 0;
-  private presentedIndex: number | null = 0;
+  private presentedIndex: number | null = null;
   private pendingFocusIndex: number | null = null;
   private browseMotionPhase: BrowseMotionPhase | "idle" = "idle";
   private browseMotionProgress = 0;
@@ -186,8 +195,14 @@ export class ShelfEngine {
   private pointerDown = false;
   private pointerId: number | null = null;
   private pointerStartX = 0;
+  private pointerStartY = 0;
   private pointerLastX = 0;
+  private pointerLastY = 0;
   private pointerTravel = 0;
+  private dragAxis: "horizontal" | "vertical" | null = null;
+  private wheelAccumulator = 0;
+  private lastWheelInputAt = 0;
+  private wheelLockedUntil = 0;
   private reducedMotion = false;
   private assetCount = 0;
   private assetFailures = 0;
@@ -201,6 +216,7 @@ export class ShelfEngine {
   private focusCameraPosition = new THREE.Vector3();
   private focusCameraTarget = new THREE.Vector3();
   private responsiveBrowseCamera = browseCamera.clone();
+  private responsiveBrowseTarget = browseTarget.clone();
   private lastTimestamp = 0;
   private lastDiagnosticsAt = 0;
   private isDisposed = false;
@@ -247,6 +263,7 @@ export class ShelfEngine {
     this.resizeObserver = new ResizeObserver(this.handleResize);
     this.setupScene();
     this.createBooks();
+    this.centerInitialShelf();
     this.bindEvents();
     this.resizeObserver.observe(canvas);
     this.handleResize();
@@ -335,18 +352,19 @@ export class ShelfEngine {
   }
 
   private createBooks() {
-    let cursor = 0;
-    const gap = 0.045;
+    const cabinetLayout = createCabinetLayout(this.booksData);
 
     this.booksData.forEach((book, index) => {
-      cursor += book.thickness * 0.5;
-      const runtime = this.createBook(book, index, cursor);
+      const runtime = this.createBook(
+        book,
+        index,
+        cabinetLayout.placements[index],
+      );
       this.runtimeBooks.push(runtime);
       this.shelfGroup.add(runtime.slot);
       if (book.coverImage) {
         void this.loadCustomCover(runtime, book.coverImage);
       }
-      cursor += book.thickness * 0.5 + gap;
     });
 
     this.motionLayout = createMotionLayout(
@@ -355,50 +373,65 @@ export class ShelfEngine {
         thickness: book.data.thickness,
       })),
     );
-    this.runtimeBooks.forEach((book, index) => {
-      this.commitBookPose(
-        book,
-        index === 0
-          ? presentedBookPose(this.motionLayout)
-          : shelvedBookPose(this.motionLayout),
-        false,
-      );
+    this.runtimeBooks.forEach((book) => {
+      this.commitBookPose(book, shelvedBookPose(this.motionLayout), false);
     });
 
-    const shelfWidth = cursor + 8;
-    const shelfGeometry = new RoundedBoxGeometry(shelfWidth, 0.22, 1.72, 4, 0.045);
-    const shelfMaterial = new THREE.MeshStandardMaterial({
-      color: shelfColor,
-      roughness: 0.62,
-      metalness: 0.03,
-    });
-    const shelf = new THREE.Mesh(shelfGeometry, shelfMaterial);
-    shelf.name = "continuousShelf";
-    shelf.position.set(cursor * 0.5, shelfTop - 0.14, 0);
-    shelf.castShadow = true;
-    shelf.receiveShadow = true;
-    this.shelfFurniture.add(shelf);
-
-    const shelfEdge = new THREE.Mesh(
-      new RoundedBoxGeometry(shelfWidth, 0.12, 0.16, 3, 0.025),
-      new THREE.MeshPhysicalMaterial({
-        color: "#4b3429",
-        roughness: 0.46,
-        clearcoat: 0.14,
-        clearcoatRoughness: 0.5,
-      }),
-    );
-    shelfEdge.position.set(cursor * 0.5, shelfTop - 0.08, 0.85);
-    shelfEdge.castShadow = true;
-    this.shelfFurniture.add(shelfEdge);
+    this.createShelves(cabinetLayout);
   }
 
-  private createBook(book: CatalogBook, index: number, x: number): RuntimeBook {
+  private createShelves(layout: CabinetLayout) {
+    const shelfWidth = layout.interiorWidth + 8;
+
+    layout.shelfSurfaceYs.forEach((surfaceY, level) => {
+      const shelf = new THREE.Mesh(
+        new RoundedBoxGeometry(shelfWidth, 0.22, 1.72, 4, 0.045),
+        new THREE.MeshStandardMaterial({
+          color: shelfColor,
+          roughness: 0.62,
+          metalness: 0.03,
+        }),
+      );
+      shelf.name = `continuousShelf:${level}`;
+      shelf.position.set(0, surfaceY - 0.14, 0);
+      shelf.castShadow = true;
+      shelf.receiveShadow = true;
+      this.shelfFurniture.add(shelf);
+
+      const shelfEdge = new THREE.Mesh(
+        new RoundedBoxGeometry(shelfWidth, 0.12, 0.16, 3, 0.025),
+        new THREE.MeshPhysicalMaterial({
+          color: "#4b3429",
+          roughness: 0.46,
+          clearcoat: 0.14,
+          clearcoatRoughness: 0.5,
+        }),
+      );
+      shelfEdge.name = `continuousShelfEdge:${level}`;
+      shelfEdge.position.set(0, surfaceY - 0.08, 0.85);
+      shelfEdge.castShadow = true;
+      this.shelfFurniture.add(shelfEdge);
+    });
+  }
+
+  private centerInitialShelf() {
+    const initialIndex = centeredShelfBookIndex(this.runtimeBooks);
+    this.activeIndex = initialIndex;
+    this.scrollIndex = initialIndex;
+    this.targetScrollIndex = initialIndex;
+    this.callbacks.onActiveIndex(initialIndex);
+  }
+
+  private createBook(
+    book: CatalogBook,
+    index: number,
+    placement: ShelfBookPlacement,
+  ): RuntimeBook {
     const width = 1.31 + ((index % 5) - 2) * 0.018;
     const depth = book.thickness;
     const slot = new THREE.Group();
     slot.name = `bookSlot:${book.id}`;
-    slot.position.set(x, shelfTop + book.height * 0.5, 0.04);
+    slot.position.set(placement.x, placement.y, cabinetBookInsetZ);
 
     const content = new THREE.Group();
     content.name = `bookPresentation:${book.id}`;
@@ -596,7 +629,8 @@ export class ShelfEngine {
       titleDecal,
       pickProxy,
       livingMaterial,
-      x,
+      row: placement.row,
+      x: placement.x,
       width,
       pose,
       hover: 0,
@@ -621,16 +655,16 @@ export class ShelfEngine {
     if (this.mode !== "browse") return;
     event.preventDefault();
     this.pendingFocusIndex = null;
-    const dominant =
-      Math.abs(event.deltaX) > Math.abs(event.deltaY)
-        ? event.deltaX
-        : event.deltaY;
-    this.targetScrollIndex = clamp(
-      this.targetScrollIndex + dominant * 0.0024,
-      0,
-      this.runtimeBooks.length - 1,
-    );
-    this.lastInputTime = performance.now();
+    const now = performance.now();
+    if (now < this.wheelLockedUntil) return;
+    if (now - this.lastWheelInputAt > 180) this.wheelAccumulator = 0;
+    this.lastWheelInputAt = now;
+    this.wheelAccumulator += event.deltaY;
+    if (Math.abs(this.wheelAccumulator) < 34) return;
+
+    this.browseShelfBy(Math.sign(this.wheelAccumulator));
+    this.wheelAccumulator = 0;
+    this.wheelLockedUntil = now + 720;
   };
 
   private handlePointerDown = (event: PointerEvent) => {
@@ -638,8 +672,11 @@ export class ShelfEngine {
     this.pointerDown = true;
     this.pointerId = event.pointerId;
     this.pointerStartX = event.clientX;
+    this.pointerStartY = event.clientY;
     this.pointerLastX = event.clientX;
+    this.pointerLastY = event.clientY;
     this.pointerTravel = 0;
+    this.dragAxis = null;
     this.canvas.setPointerCapture(event.pointerId);
   };
 
@@ -649,14 +686,27 @@ export class ShelfEngine {
 
     if (this.pointerDown && event.pointerId === this.pointerId) {
       this.pendingFocusIndex = null;
-      const delta = event.clientX - this.pointerLastX;
+      const deltaX = event.clientX - this.pointerLastX;
+      const deltaY = event.clientY - this.pointerLastY;
       this.pointerLastX = event.clientX;
-      this.pointerTravel += Math.abs(delta);
-      this.targetScrollIndex = clamp(
-        this.targetScrollIndex - delta / Math.max(105, this.canvas.clientWidth * 0.11),
-        0,
-        this.runtimeBooks.length - 1,
-      );
+      this.pointerLastY = event.clientY;
+      this.pointerTravel += Math.hypot(deltaX, deltaY);
+
+      if (this.dragAxis === null && this.pointerTravel > 8) {
+        const travelX = Math.abs(event.clientX - this.pointerStartX);
+        const travelY = Math.abs(event.clientY - this.pointerStartY);
+        this.dragAxis = travelY > travelX ? "vertical" : "horizontal";
+      }
+
+      if (this.dragAxis === "horizontal") {
+        const { first, last } = this.rowBoundsForIndex(this.activeIndex);
+        this.targetScrollIndex = clamp(
+          this.targetScrollIndex -
+            deltaX / Math.max(105, this.canvas.clientWidth * 0.11),
+          first,
+          last,
+        );
+      }
       this.lastInputTime = performance.now();
       this.canvas.classList.add("is-dragging");
       return;
@@ -667,24 +717,33 @@ export class ShelfEngine {
 
   private handlePointerUp = (event: PointerEvent) => {
     if (event.pointerId !== this.pointerId) return;
-    const wasClick = this.pointerTravel < 7 && Math.abs(event.clientX - this.pointerStartX) < 7;
+    const travelX = event.clientX - this.pointerStartX;
+    const travelY = event.clientY - this.pointerStartY;
+    const wasClick =
+      this.pointerTravel < 7 && Math.abs(travelX) < 7 && Math.abs(travelY) < 7;
+    const completedVerticalSwipe =
+      this.dragAxis === "vertical" && Math.abs(travelY) >= 42;
     this.pointerDown = false;
     this.pointerId = null;
     this.canvas.classList.remove("is-dragging");
     if (this.canvas.hasPointerCapture(event.pointerId)) {
       this.canvas.releasePointerCapture(event.pointerId);
     }
-    if (this.mode === "browse" && wasClick) {
+    if (this.mode === "browse" && completedVerticalSwipe) {
+      this.browseShelfBy(travelY < 0 ? 1 : -1);
+    } else if (this.mode === "browse" && wasClick) {
       this.updatePointer(event);
       const hit = this.raycastBook();
       if (hit !== null) this.focusBook(hit);
     }
+    this.dragAxis = null;
   };
 
   private handlePointerCancel = (event: PointerEvent) => {
     if (event.pointerId !== this.pointerId) return;
     this.pointerDown = false;
     this.pointerId = null;
+    this.dragAxis = null;
     this.canvas.classList.remove("is-dragging");
   };
 
@@ -700,6 +759,7 @@ export class ShelfEngine {
   private handleWindowBlur = () => {
     this.pointerDown = false;
     this.pointerId = null;
+    this.dragAxis = null;
     this.canvas.classList.remove("is-dragging");
   };
 
@@ -720,6 +780,12 @@ export class ShelfEngine {
     } else if (event.key === "ArrowLeft") {
       event.preventDefault();
       this.browseBy(-1);
+    } else if (event.key === "ArrowDown" || event.key === "PageDown") {
+      event.preventDefault();
+      this.browseShelfBy(1);
+    } else if (event.key === "ArrowUp" || event.key === "PageUp") {
+      event.preventDefault();
+      this.browseShelfBy(-1);
     } else if (event.key === "Home") {
       event.preventDefault();
       this.browseTo(0);
@@ -754,17 +820,6 @@ export class ShelfEngine {
     this.canvas.style.cursor = hit === null ? "grab" : "pointer";
   }
 
-  private xAtIndex(index: number) {
-    const lower = Math.floor(index);
-    const upper = Math.min(this.runtimeBooks.length - 1, Math.ceil(index));
-    const fraction = index - lower;
-    return THREE.MathUtils.lerp(
-      this.runtimeBooks[lower]?.x ?? 0,
-      this.runtimeBooks[upper]?.x ?? 0,
-      fraction,
-    );
-  }
-
   private footprintFor(
     book: RuntimeBook,
     pose: BookPose = book.pose,
@@ -786,6 +841,7 @@ export class ShelfEngine {
       this.runtimeBooks.find(
         (other) =>
           other !== book &&
+          other.row === book.row &&
           bookFootprintsOverlap(
             proposed,
             this.footprintFor(other),
@@ -840,19 +896,18 @@ export class ShelfEngine {
 
   private updateBrowseMotion(delta: number) {
     if (this.browseMotionPhase === "idle") {
-      if (this.presentedIndex === this.activeIndex) {
-        if (this.pendingFocusIndex === this.activeIndex) {
-          this.beginFocus(this.activeIndex);
-        }
+      const requestedIndex = this.pendingFocusIndex;
+      if (requestedIndex === null && this.presentedIndex === null) {
+        return;
+      }
+      if (requestedIndex !== null && this.presentedIndex === requestedIndex) {
+        this.beginFocus(requestedIndex);
         return;
       }
 
-      this.motionBookIndex = this.presentedIndex;
+      this.motionBookIndex = this.presentedIndex ?? requestedIndex;
       this.browseMotionPhase =
-        this.motionBookIndex === null ? "extract-next" : "retreat-current";
-      if (this.motionBookIndex === null) {
-        this.motionBookIndex = this.activeIndex;
-      }
+        this.presentedIndex === null ? "extract-next" : "retreat-current";
       this.browseMotionProgress = 0;
     }
 
@@ -888,8 +943,9 @@ export class ShelfEngine {
         break;
       case "shelve-current":
         this.presentedIndex = null;
-        this.motionBookIndex = this.activeIndex;
-        this.browseMotionPhase = "extract-next";
+        this.motionBookIndex = this.pendingFocusIndex;
+        this.browseMotionPhase =
+          this.motionBookIndex === null ? "idle" : "extract-next";
         break;
       case "extract-next":
         this.browseMotionPhase = "turn-next";
@@ -943,6 +999,9 @@ export class ShelfEngine {
   };
 
   private updateState(delta: number, timestamp: number) {
+    if (this.mode === "browse" || this.mode === "returning") {
+      this.updateBrowseFrame(this.activeIndex, delta);
+    }
     if (this.mode === "browse") {
       if (!this.pointerDown && timestamp - this.lastInputTime > 150) {
         this.targetScrollIndex = damp(
@@ -963,7 +1022,7 @@ export class ShelfEngine {
         this.responsiveBrowseCamera,
         1 - Math.exp(-(this.reducedMotion ? 18 : 7) * delta),
       );
-      this.camera.lookAt(browseTarget);
+      this.camera.lookAt(this.responsiveBrowseTarget);
     } else if (this.mode === "focusing") {
       this.focusProgress = clamp(
         this.focusProgress +
@@ -996,7 +1055,7 @@ export class ShelfEngine {
         this.responsiveBrowseCamera,
         1 - Math.exp(-(this.reducedMotion ? 24 : 14) * delta),
       );
-      this.camera.lookAt(browseTarget);
+      this.camera.lookAt(this.responsiveBrowseTarget);
       if (this.focusProgress <= 0) {
         if (this.selectedIndex !== null) {
           this.commitBookPose(
@@ -1022,7 +1081,6 @@ export class ShelfEngine {
       this.activeIndex = nextActive;
       this.callbacks.onActiveIndex(this.activeIndex);
     }
-    this.shelfGroup.position.x = -this.xAtIndex(this.scrollIndex);
     if (this.mode === "browse") {
       this.updateBrowseMotion(delta);
     }
@@ -1164,15 +1222,49 @@ export class ShelfEngine {
     );
   }
 
+  private browseRowCenter(index: number) {
+    const book = this.runtimeBooks[index];
+    if (!book) return browseTarget.y;
+    const shelfSurfaceY = book.slot.position.y - book.data.height * 0.5;
+    return shelfSurfaceY + Math.min(1.16, cabinetRowSpacing * 0.46);
+  }
+
+  private updateBrowseFrame(index: number, delta = 0) {
+    const isMobile = this.canvas.clientWidth < 760;
+    const book = this.runtimeBooks[index];
+    const rowCenter = this.browseRowCenter(index);
+    const targetShelfX = -(book?.x ?? 0);
+    const targetShelfY = browseTarget.y - rowCenter;
+    const blend = (current: number, target: number) =>
+      delta > 0
+        ? damp(current, target, this.reducedMotion ? 20 : 6.5, delta)
+        : target;
+
+    this.shelfGroup.position.x = blend(
+      this.shelfGroup.position.x,
+      targetShelfX,
+    );
+    this.shelfGroup.position.y = blend(
+      this.shelfGroup.position.y,
+      targetShelfY,
+    );
+    this.responsiveBrowseCamera.set(
+      browseCamera.x,
+      browseCamera.y,
+      isMobile ? 8.3 : browseCamera.z,
+    );
+    this.responsiveBrowseTarget.set(
+      browseTarget.x,
+      browseTarget.y,
+      browseTarget.z,
+    );
+  }
+
   private handleResize = () => {
     const width = Math.max(1, this.canvas.clientWidth);
     const height = Math.max(1, this.canvas.clientHeight);
     const dprCap = width < 760 ? 1.5 : 1.75;
-    this.responsiveBrowseCamera.set(
-      0,
-      width < 760 ? 1.5 : browseCamera.y,
-      width < 760 ? 8.3 : browseCamera.z,
-    );
+    this.updateBrowseFrame(this.activeIndex);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, dprCap));
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
@@ -1181,7 +1273,7 @@ export class ShelfEngine {
     if (this.mode === "browse" && this.focusProgress < 0.01) {
       this.camera.clearViewOffset();
       this.camera.position.copy(this.responsiveBrowseCamera);
-      this.camera.lookAt(browseTarget);
+      this.camera.lookAt(this.responsiveBrowseTarget);
     } else if (this.mode === "inspect" && this.selectedIndex !== null) {
       const worldPosition = new THREE.Vector3();
       this.runtimeBooks[this.selectedIndex].content.getWorldPosition(
@@ -1277,7 +1369,7 @@ export class ShelfEngine {
       texture.name = `customCover:${runtime.data.id}`;
       texture.colorSpace = THREE.SRGBColorSpace;
       texture.anisotropy = Math.min(
-        8,
+        16,
         this.renderer.capabilities.getMaxAnisotropy(),
       );
 
@@ -1380,14 +1472,70 @@ export class ShelfEngine {
     }
   }
 
+  private rowBoundsForIndex(index: number) {
+    const current = this.runtimeBooks[
+      clamp(Math.round(index), 0, this.runtimeBooks.length - 1)
+    ];
+    if (!current) return { first: 0, last: 0 };
+    const rowBooks = this.runtimeBooks.filter((book) => book.row === current.row);
+    return {
+      first: rowBooks[0]?.index ?? current.index,
+      last: rowBooks[rowBooks.length - 1]?.index ?? current.index,
+    };
+  }
+
+  private setShelfPageIndex(index: number) {
+    const next = clamp(Math.round(index), 0, this.runtimeBooks.length - 1);
+    this.pendingFocusIndex = null;
+    this.scrollIndex = next;
+    this.targetScrollIndex = next;
+    this.lastInputTime = performance.now();
+    if (next !== this.activeIndex) {
+      this.activeIndex = next;
+      this.callbacks.onActiveIndex(next);
+    }
+  }
+
+  browseShelfBy(direction: number) {
+    if (this.mode !== "browse" || direction === 0) return;
+    const currentIndex = clamp(
+      Math.round(this.targetScrollIndex),
+      0,
+      this.runtimeBooks.length - 1,
+    );
+    const targetIndex = adjacentShelfBookIndex(
+      this.runtimeBooks,
+      currentIndex,
+      direction,
+    );
+    if (targetIndex !== currentIndex) this.setShelfPageIndex(targetIndex);
+  }
+
+  browseShelfTo(row: number) {
+    if (this.mode !== "browse") return;
+    const targetIndex = centeredShelfBookIndex(this.runtimeBooks, Math.round(row));
+    if (this.runtimeBooks[targetIndex]?.row === Math.round(row)) {
+      this.setShelfPageIndex(targetIndex);
+    }
+  }
+
   browseBy(direction: number) {
     if (this.mode !== "browse") return;
-    this.browseTo(Math.round(this.targetScrollIndex) + direction);
+    const current = Math.round(this.targetScrollIndex);
+    const { first, last } = this.rowBoundsForIndex(current);
+    this.browseTo(clamp(current + direction, first, last));
   }
 
   browseTo(index: number) {
     if (this.mode !== "browse") return;
     const next = clamp(Math.round(index), 0, this.runtimeBooks.length - 1);
+    const current = this.runtimeBooks[
+      clamp(Math.round(this.targetScrollIndex), 0, this.runtimeBooks.length - 1)
+    ];
+    if (current && this.runtimeBooks[next]?.row !== current.row) {
+      this.setShelfPageIndex(next);
+      return;
+    }
     this.pendingFocusIndex = null;
     this.targetScrollIndex = next;
     this.lastInputTime = performance.now() - 1000;
@@ -1445,6 +1593,7 @@ export class ShelfEngine {
         rightIndex += 1
       ) {
         const right = this.runtimeBooks[rightIndex];
+        if (left.row !== right.row) continue;
         if (
           bookFootprintsOverlap(
             this.footprintFor(left),

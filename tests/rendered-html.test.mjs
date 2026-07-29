@@ -13,9 +13,10 @@ test("exports the complete editorial bookshelf shell", async () => {
     /<title>The Complete Shelf — An Interactive 3D Library<\/title>/i,
   );
   assert.match(html, /19(?:<!-- -->)? VOLUMES/);
-  assert.match(html, /01 CONTINUOUS SHELF/);
+  assert.match(html, /03(?:<!-- -->)? SHELF GROUPS/);
   assert.match(html, /data-testid="shelf-canvas"/);
-  assert.match(html, /data-testid="inspect-active"/);
+  assert.doesNotMatch(html, /data-testid="browse-(?:previous|next)"/);
+  assert.doesNotMatch(html, /data-testid="browse-caption"|data-testid="inspect-active"/);
   assert.match(html, /Poor Charlie’s Almanack/);
   assert.match(html, /Browse to High Growth Handbook/);
   const shelfOrder = [
@@ -54,6 +55,30 @@ test("exports the complete editorial bookshelf shell", async () => {
     /View (?:local|all) assets|open-asset-library|asset-library/i,
   );
   assert.doesNotMatch(html, /Your site is taking shape|react-loading-skeleton/);
+});
+
+test("keeps a synced WeRead shelf local, private-safe, and optional", async () => {
+  const [syncScript, loader, interfaceSource, gitignore, packageJson] =
+    await Promise.all([
+      readFile(new URL("../scripts/sync-weread.mjs", import.meta.url), "utf8"),
+      readFile(new URL("../app/load-catalog.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/ProgressLibrary.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../.gitignore", import.meta.url), "utf8"),
+      readFile(new URL("../package.json", import.meta.url), "utf8"),
+    ]);
+
+  assert.match(syncScript, /skillVersion = "1\.0\.4"/);
+  assert.match(syncScript, /book\.secret === 0/);
+  assert.match(syncScript, /shelf\.archive/);
+  assert.match(syncScript, /WEREAD_BOOKS_PER_SHELF/);
+  assert.match(syncScript, /shelves,/);
+  assert.match(loader, /weread-catalog\.json/);
+  assert.match(loader, /fallbackShelves/);
+  assert.match(interfaceSource, /loadLocalCatalog/);
+  assert.match(interfaceSource, /data-testid="shelf-switcher"/);
+  assert.match(gitignore, /\/public\/weread-catalog\.json/);
+  assert.match(gitignore, /\/public\/books\/weread\//);
+  assert.match(packageJson, /"sync:weread"/);
 });
 
 test("keeps third-party editions optional and supports owned cover art", async () => {
@@ -129,8 +154,7 @@ test("keeps third-party editions optional and supports owned cover art", async (
   assert.match(engine, /this\.controls\.target\.copy\(this\.focusCameraTarget\)/);
   assert.match(engine, /bookInspectionIdle:/);
   assert.match(engine, /this\.mode === "inspect" && !this\.reducedMotion/);
-  assert.match(styles, /\.browse-caption::before/);
-  assert.match(styles, /rgba\(238, 232, 219, 0\.96\)/);
+  assert.doesNotMatch(styles, /\.browse-caption|\.inspect-button/);
   assert.doesNotMatch(
     engine,
     /focusProgress = damp\(\s*this\.focusProgress,\s*1/s,
@@ -183,22 +207,22 @@ test("keeps every book footprint separated throughout browse and focus routes", 
       presentedBookPose,
       shelvedBookPose,
     },
+    { cabinetBookInsetZ, createCabinetLayout },
   ] = await Promise.all([
     import(new URL("../app/catalog.ts", import.meta.url)),
     import(new URL("../app/book-motion.ts", import.meta.url)),
+    import(new URL("../app/shelf-layout.ts", import.meta.url)),
   ]);
-  const gap = 0.045;
-  let cursor = 0;
+  const cabinet = createCabinetLayout(catalog);
   const books = catalog.map((book, index) => {
-    cursor += book.thickness * 0.5;
-    const runtime = {
+    const placement = cabinet.placements[index];
+    return {
       id: book.id,
-      x: cursor,
+      row: placement.row,
+      x: placement.x,
       width: 1.31 + ((index % 5) - 2) * 0.018,
       thickness: book.thickness,
     };
-    cursor += book.thickness * 0.5 + gap;
-    return runtime;
   });
   const layout = createMotionLayout(books);
   assert.ok(layout.rotationLaneZ > layout.presentedZ);
@@ -208,7 +232,7 @@ test("keeps every book footprint separated throughout browse and focus routes", 
     return {
       id: book.id,
       x: book.x + pose.x,
-      z: 0.04 + pose.z,
+      z: cabinetBookInsetZ + pose.z,
       yaw: pose.yaw,
       scale: pose.scale,
       width: book.width,
@@ -219,6 +243,7 @@ test("keeps every book footprint separated throughout browse and focus routes", 
   function assertSeparated(poses, context) {
     for (let left = 0; left < books.length; left += 1) {
       for (let right = left + 1; right < books.length; right += 1) {
+        if (books[left].row !== books[right].row) continue;
         assert.equal(
           bookFootprintsOverlap(
             footprint(books[left], poses[left]),

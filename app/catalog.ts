@@ -25,8 +25,8 @@ export type CatalogBook = {
   shortTitle: string;
   author: string;
   description: string;
-  quote: string;
-  quoteBy: string;
+  quote?: string;
+  quoteBy?: string;
   format: string;
   availability: string;
   url: string;
@@ -44,6 +44,19 @@ export type CatalogBook = {
   coverImage?: string;
   linkLabel?: string;
   living?: boolean;
+  source?: "weread";
+  sourceId?: string;
+  category?: string;
+  publisher?: string;
+  publishTime?: string;
+  isbn?: string;
+  rating?: number;
+  ratingCount?: number;
+  lastReadAt?: string;
+  finishReading?: boolean;
+  shelfGroupId?: string;
+  shelfGroupName?: string;
+  shelfGroupIndex?: number;
 };
 
 export const catalog: CatalogBook[] = ([

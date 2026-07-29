@@ -40,21 +40,23 @@ function wrapText(
   lineHeight: number,
   maxLines = 8,
 ) {
-  const words = text.split(/\s+/);
+  const words =
+    text.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]|[^\s\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]+|\s+/gu) ??
+    [];
   const lines: string[] = [];
   let line = "";
 
   for (const word of words) {
-    const test = line ? `${line} ${word}` : word;
-    if (ctx.measureText(test).width > maxWidth && line) {
-      lines.push(line);
-      line = word;
+    const test = `${line}${word}`;
+    if (ctx.measureText(test).width > maxWidth && line.trim()) {
+      lines.push(line.trim());
+      line = word.trimStart();
     } else {
       line = test;
     }
   }
 
-  if (line) lines.push(line);
+  if (line.trim()) lines.push(line.trim());
   lines.slice(0, maxLines).forEach((entry, index) => {
     ctx.fillText(entry, x, y + index * lineHeight);
   });
@@ -516,6 +518,7 @@ function drawCoverTypography(
     book.author,
     82,
     Math.max(320, titleY + titleLines * titleSize * 0.91 + 35),
+    width - 164,
   );
 
   if (!decalOnly) {
@@ -628,19 +631,30 @@ export function createBackCover(book: CatalogBook) {
   ctx.fillRect(108, 180 + lines * 58 + 78, 108, 9);
   ctx.restore();
 
-  ctx.font = `italic 500 54px ${serif}`;
-  wrapText(
-    ctx,
-    `“${book.quote}”`,
-    108,
-    180 + lines * 58 + 132,
-    808,
-    63,
-    6,
-  );
-  ctx.font = `600 24px ${sans}`;
-  ctx.letterSpacing = "2px";
-  ctx.fillText(book.quoteBy.toUpperCase(), 110, 1160);
+  if (book.quote) {
+    ctx.font = `italic 500 54px ${serif}`;
+    wrapText(
+      ctx,
+      `“${book.quote}”`,
+      108,
+      180 + lines * 58 + 132,
+      808,
+      63,
+      6,
+    );
+    if (book.quoteBy) {
+      ctx.font = `600 24px ${sans}`;
+      ctx.letterSpacing = "2px";
+      ctx.fillText(book.quoteBy.toUpperCase(), 110, 1160);
+    }
+  } else {
+    ctx.font = `600 24px ${sans}`;
+    ctx.letterSpacing = "2px";
+    const metadata = [book.category, book.publisher, book.isbn]
+      .filter(Boolean)
+      .join(" · ");
+    wrapText(ctx, metadata.toUpperCase(), 108, 1160, 808, 36, 3);
+  }
 
   ctx.globalAlpha = 0.78;
   ctx.font = `500 20px ${sans}`;
