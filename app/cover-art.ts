@@ -645,7 +645,7 @@ function ean13CheckDigit(twelve: string): number {
 }
 
 function isGuardBar(bitIndex: number): boolean {
-  return bitIndex < 3 || (bitIndex >= 45 && bitIndex <= 49) || bitIndex >= 91;
+  return bitIndex < 3 || (bitIndex >= 45 && bitIndex <= 49) || bitIndex >= 92;
 }
 
 function drawEan13Barcode(
@@ -671,8 +671,8 @@ function drawEan13Barcode(
     bits += eanR[digit] ?? "";
   }
   bits += "101";
-  const moduleWidth = 4.4;
-  const barHeight = 190;
+ const moduleWidth = 4.4;
+  const barHeight = 120;
   const totalWidth = bits.length * moduleWidth;
   const startX = canvasWidth - totalWidth - 108;
   const startY = canvasHeight - 250;
@@ -746,18 +746,10 @@ function drawEan13Barcode(
     wrapText(ctx, metadata.toUpperCase(), 108, 1160, 808, 36, 3);
   }
 
-  if (book.isbn) {
-    drawEan13Barcode(ctx, book.isbn, logicalWidth, logicalHeight);
-  }
+ if (book.isbn) {
+   drawEan13Barcode(ctx, book.isbn, logicalWidth, logicalHeight);
+ }
 
-  ctx.globalAlpha = 0.78;
-  ctx.font = `500 20px ${sans}`;
-  ctx.letterSpacing = "3px";
-  ctx.fillText(
-    `${siteConfig.coverImprint} · ${siteConfig.coverTagline}`,
-    110,
-    1380,
-  );
-  ctx.restore();
-  return canvas;
+ ctx.restore();
+ return canvas;
 }
