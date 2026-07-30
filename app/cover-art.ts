@@ -607,6 +607,96 @@ export function createSpineCover(book: CatalogBook) {
 }
 
 export function createBackCover(book: CatalogBook) {
+// --- EAN-13 barcode ---
+const eanL: Record<string, string> = {
+  "0": "0001101", "1": "0011001", "2": "0010011", "3": "0111101",
+  "4": "0100011", "5": "0110001", "6": "0101111", "7": "0111011",
+  "8": "0110111", "9": "0001011",
+};
+const eanG: Record<string, string> = {
+  "0": "0100111", "1": "0110011", "2": "0011011", "3": "0100001",
+  "4": "0011101", "5": "0111001", "6": "0000101", "7": "0010001",
+  "8": "0001001", "9": "0010111",
+};
+const eanR: Record<string, string> = {
+  "0": "1110010", "1": "1100110", "2": "1101100", "3": "1000010",
+  "4": "1011100", "5": "1001110", "6": "1010000", "7": "1000100",
+  "8": "1001000", "9": "1110100",
+};
+const eanParity = ["LLLLLL", "LLGLGG", "LLGGLG", "LLGGGL", "LGLLGG", "LGGLLG", "LGGGLL", "LGLGLG", "LGLGGL", "LGGLGL"];
+
+function normalizeIsbnToEan13(raw: string): string | null {
+  const digits = raw.replace(/[^0-9Xx]/g, "").toUpperCase();
+  if (digits.length === 13) {
+    const check = ean13CheckDigit(digits.slice(0, 12));
+    return check === Number(digits[12]) ? digits : digits.slice(0, 12) + check;
+  }
+  if (digits.length === 10) {
+    return "978" + digits.slice(0, 9) + ean13CheckDigit("978" + digits.slice(0, 9));
+  }
+  return null;
+}
+
+function ean13CheckDigit(twelve: string): number {
+  const sum = twelve.split("").reduce((acc, digit, i) => {
+    return acc + Number(digit) * (i % 2 === 0 ? 1 : 3);
+  }, 0);
+  return (10 - (sum % 10)) % 10;
+}
+
+function isGuardBar(bitIndex: number): boolean {
+  return bitIndex < 3 || (bitIndex >= 45 && bitIndex <= 49) || bitIndex >= 91;
+}
+
+function drawEan13Barcode(
+  ctx: CanvasRenderingContext2D,
+  rawIsbn: string,
+  canvasWidth: number,
+  canvasHeight: number,
+) {
+  const code = normalizeIsbnToEan13(rawIsbn);
+  if (!code) return;
+  const firstDigit = Number(code[0]);
+  const parity = eanParity[firstDigit] ?? "LLLLLL";
+  let bits = "";
+  bits += "101";
+  for (let i = 0; i < 6; i++) {
+    const digit = code[i + 1];
+    const table = parity[i] === "G" ? eanG : eanL;
+    bits += table[digit] ?? "";
+  }
+  bits += "01010";
+  for (let i = 0; i < 6; i++) {
+    const digit = code[i + 7];
+    bits += eanR[digit] ?? "";
+  }
+  bits += "101";
+  const moduleWidth = 4.4;
+  const barHeight = 190;
+  const totalWidth = bits.length * moduleWidth;
+  const startX = canvasWidth - totalWidth - 108;
+  const startY = canvasHeight - 250;
+  ctx.save();
+  ctx.fillStyle = "#ffffff";
+  const padding = 16;
+  ctx.fillRect(startX - padding, startY - padding, totalWidth + padding * 2, barHeight + 48);
+  ctx.fillStyle = "#000000";
+  for (let i = 0; i < bits.length; i++) {
+    if (bits[i] === "1") {
+      const h = isGuardBar(i) ? barHeight + 10 : barHeight;
+      ctx.fillRect(startX + i * moduleWidth, startY, moduleWidth, h);
+    }
+  }
+  ctx.fillStyle = "#000000";
+  ctx.font = `400 28px ${sans}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "bottom";
+  const isbnDisplay = code.startsWith("978")
+    ? `ISBN ${code.slice(0, 3)}-${code.slice(3)}`
+    : code;
+  ctx.fillText(isbnDisplay, startX + totalWidth / 2, startY + barHeight + 34);
+  ctx.restore();
+}
   const logicalWidth = 1024;
   const logicalHeight = 1536;
   const canvas = document.createElement("canvas");
@@ -635,7 +725,7 @@ export function createBackCover(book: CatalogBook) {
     ctx.font = `italic 500 54px ${serif}`;
     wrapText(
       ctx,
-      `“${book.quote}”`,
+      `"${book.quote}"`,
       108,
       180 + lines * 58 + 132,
       808,
@@ -654,6 +744,10 @@ export function createBackCover(book: CatalogBook) {
       .filter(Boolean)
       .join(" · ");
     wrapText(ctx, metadata.toUpperCase(), 108, 1160, 808, 36, 3);
+  }
+
+  if (book.isbn) {
+    drawEan13Barcode(ctx, book.isbn, logicalWidth, logicalHeight);
   }
 
   ctx.globalAlpha = 0.78;
