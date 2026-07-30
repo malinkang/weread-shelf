@@ -73,7 +73,9 @@ type RuntimeBook = {
   hover: number;
   targetHover: number;
   idleAmount: number;
-  textures: THREE.Texture[];
+ textures: THREE.Texture[];
+ lazyTextures: THREE.Texture[];
+ backSurface: THREE.Mesh;
 };
 
 const browseCamera = new THREE.Vector3(0, 1.42, 6.65);
@@ -528,11 +530,11 @@ export class ShelfEngine {
     headbandBottom.position.y = -book.height * 0.5 + 0.045;
     physical.add(headbandBottom);
 
+    // Front and spine textures are needed during browse; back cover and
+    // title decal are lazily generated on first focus (see ensureInspectionTextures).
     const frontTexture = toTexture(createFrontCover(book), this.renderer);
-    const titleTexture = toTexture(createTitleDecal(book), this.renderer);
     const spineTexture = toTexture(createSpineCover(book), this.renderer, 4);
-    const backTexture = toTexture(createBackCover(book), this.renderer);
-    const textures = [frontTexture, titleTexture, spineTexture, backTexture];
+    const textures = [frontTexture, spineTexture];
 
     const frontSurface = new THREE.Mesh<
       THREE.PlaneGeometry,
@@ -553,9 +555,9 @@ export class ShelfEngine {
 
     const titleDecal = new THREE.Mesh(
       new THREE.PlaneGeometry(width - 0.065, book.height - 0.065),
-      new THREE.MeshBasicMaterial({
-        map: titleTexture,
-        transparent: true,
+     new THREE.MeshBasicMaterial({
+        map: null,
+       transparent: true,
         alphaTest: 0.02,
         depthWrite: false,
         polygonOffset: true,
@@ -569,9 +571,9 @@ export class ShelfEngine {
 
     const backSurface = new THREE.Mesh(
       new THREE.PlaneGeometry(width - 0.065, book.height - 0.065),
-      new THREE.MeshStandardMaterial({
-        map: backTexture,
-        roughness: 0.72,
+     new THREE.MeshStandardMaterial({
+        map: null,
+       roughness: 0.72,
       }),
     );
     backSurface.name = "backArtwork";
@@ -625,18 +627,20 @@ export class ShelfEngine {
       inspectionIdle,
       physical,
       assetHolder,
-      frontSurface,
-      titleDecal,
-      pickProxy,
-      livingMaterial,
-      row: placement.row,
-      x: placement.x,
-      width,
-      pose,
-      hover: 0,
-      targetHover: 0,
-      idleAmount: 0,
-      textures,
+     frontSurface,
+     titleDecal,
+     pickProxy,
+     livingMaterial,
+     backSurface,
+     row: placement.row,
+     x: placement.x,
+     width,
+     pose,
+     hover: 0,
+     targetHover: 0,
+     idleAmount: 0,
+     textures,
+     lazyTextures: [],
     };
   }
 
@@ -870,11 +874,31 @@ export class ShelfEngine {
     book.content.position.z = pose.z;
     book.content.rotation.y = pose.yaw;
     book.content.scale.setScalar(pose.scale);
-    return true;
+   return true;
+ }
+
+  private ensureInspectionTextures(book: RuntimeBook) {
+    if (book.lazyTextures.length > 0) return;
+    const titleTexture = toTexture(
+      createTitleDecal(book.data),
+      this.renderer,
+    );
+    (book.titleDecal.material as THREE.MeshBasicMaterial).map = titleTexture;
+    (book.titleDecal.material as THREE.MeshBasicMaterial).needsUpdate = true;
+    book.lazyTextures.push(titleTexture);
+
+    const backTexture = toTexture(
+      createBackCover(book.data),
+      this.renderer,
+    );
+    (book.backSurface.material as THREE.MeshStandardMaterial).map = backTexture;
+    (book.backSurface.material as THREE.MeshStandardMaterial).needsUpdate = true;
+    book.lazyTextures.push(backTexture);
   }
 
-  private beginFocus(index: number) {
-    if (
+private beginFocus(index: number) {
+    this.ensureInspectionTextures(this.runtimeBooks[index]);
+   if (
       this.mode !== "browse" ||
       this.browseMotionPhase !== "idle" ||
       this.presentedIndex !== index
@@ -1657,9 +1681,10 @@ export class ShelfEngine {
         : [object.material];
       materials.forEach((material) => material?.dispose());
     });
-    this.runtimeBooks.forEach((book) => {
-      book.textures.forEach((texture) => texture.dispose());
-    });
+   this.runtimeBooks.forEach((book) => {
+     book.textures.forEach((texture) => texture.dispose());
+     book.lazyTextures.forEach((texture) => texture.dispose());
+   });
     this.stripeTextures.forEach((texture) => texture.dispose());
     this.stripeTextureCache.clear();
     this.stripeTextures.clear();
