@@ -33,7 +33,10 @@ import {
 } from "./stripe-foil";
 import {
   adjacentShelfBookIndex,
+  cabinetBaseTop,
   cabinetBookInsetZ,
+  cabinetShelfThickness,
+  cabinetSideThickness,
   cabinetRowSpacing,
   centeredShelfBookIndex,
   createCabinetLayout,
@@ -43,10 +46,13 @@ import {
 import { siteConfig } from "./site-config";
 
 export type ShelfMode = "browse" | "focusing" | "inspect" | "returning";
+export type BrowseScope = "wall" | "shelf";
 
 type ShelfCallbacks = {
   onActiveIndex: (index: number) => void;
   onMode: (mode: ShelfMode, selectedIndex: number | null) => void;
+  onBrowseScope: (scope: BrowseScope, row: number | null) => void;
+  onPhotoFocus: (open: boolean) => void;
   onStatus: (message: string) => void;
   onReady: () => void;
 };
@@ -68,20 +74,22 @@ type RuntimeBook = {
   livingMaterial?: THREE.ShaderMaterial;
   row: number;
   x: number;
+  shelfTilt: number;
   width: number;
   pose: BookPose;
   hover: number;
   targetHover: number;
   idleAmount: number;
- textures: THREE.Texture[];
- lazyTextures: THREE.Texture[];
- backSurface: THREE.Mesh;
+  textures: THREE.Texture[];
+  lazyTextures: THREE.Texture[];
+  backSurface: THREE.Mesh;
 };
 
 const browseCamera = new THREE.Vector3(0, 1.42, 6.65);
 const browseTarget = new THREE.Vector3(0, 1.28, 0.15);
 const pageColor = new THREE.Color("#e9dfca");
-const shelfColor = new THREE.Color("#5a4132");
+const walnutColor = new THREE.Color("#f4e6da");
+const walnutEdgeColor = new THREE.Color("#3f291e");
 const clamp = THREE.MathUtils.clamp;
 const focusInDuration = 0.46;
 const focusOutDuration = 0.34;
@@ -111,6 +119,23 @@ function damp(current: number, target: number, lambda: number, delta: number) {
 function easeOutCubic(value: number) {
   const t = 1 - clamp(value, 0, 1);
   return 1 - t * t * t;
+}
+
+function loadWalnutTexture(
+  renderer: THREE.WebGLRenderer,
+  rotation = 0,
+  repeatX = 1,
+  repeatY = 1,
+) {
+  const texture = new THREE.TextureLoader().load("/walnut-shelf-texture.png");
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.center.set(0.5, 0.5);
+  texture.rotation = rotation;
+  texture.repeat.set(repeatX, repeatY);
+  texture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  return texture;
 }
 
 function toTexture(
@@ -173,13 +198,21 @@ export class ShelfEngine {
   private controls: OrbitControls;
   private shelfGroup = new THREE.Group();
   private shelfFurniture = new THREE.Group();
+  private wallCabinet = new THREE.Group();
+  private focusShelfBoards: THREE.Group[] = [];
+  private focusedShelfRow: number | null = null;
+  private cabinetLayout: CabinetLayout | null = null;
   private runtimeBooks: RuntimeBook[] = [];
   private pickTargets: THREE.Object3D[] = [];
+  private shelfPickTargets: THREE.Object3D[] = [];
+  private photoPickTargets: THREE.Object3D[] = [];
+  private shelfTextures: THREE.Texture[] = [];
   private raycaster = new THREE.Raycaster();
   private pointer = new THREE.Vector2(10, 10);
   private animationFrame = 0;
   private resizeObserver: ResizeObserver;
   private mode: ShelfMode = "browse";
+  private browseScope: BrowseScope = "wall";
   private selectedIndex: number | null = null;
   private activeIndex = 0;
   private presentedIndex: number | null = null;
@@ -282,6 +315,7 @@ export class ShelfEngine {
           diagnostics: () => ReturnType<ShelfEngine["getDiagnostics"]>;
           focus: (index: number) => void;
           browse: (index: number) => void;
+          showWall: () => void;
           returnToShelf: () => void;
         };
       }
@@ -289,13 +323,14 @@ export class ShelfEngine {
       diagnostics: () => this.getDiagnostics(),
       focus: (index) => this.focusBook(index),
       browse: (index) => this.browseTo(index),
+      showWall: () => this.showWall(),
       returnToShelf: () => this.returnToShelf(),
     };
   }
 
   private setupScene() {
     this.scene.background = new THREE.Color("#eee8db");
-    this.scene.fog = new THREE.Fog("#eee8db", 10, 26);
+    this.scene.fog = new THREE.Fog("#eee8db", 18, 60);
 
     const hemisphere = new THREE.HemisphereLight("#fff8ea", "#6e5848", 2.4);
     this.scene.add(hemisphere);
@@ -307,10 +342,10 @@ export class ShelfEngine {
       window.innerWidth < 700 ? 1024 : 2048,
       window.innerWidth < 700 ? 1024 : 2048,
     );
-    key.shadow.camera.left = -8;
-    key.shadow.camera.right = 8;
-    key.shadow.camera.top = 6;
-    key.shadow.camera.bottom = -2;
+    key.shadow.camera.left = -11;
+    key.shadow.camera.right = 11;
+    key.shadow.camera.top = 9;
+    key.shadow.camera.bottom = -9;
     key.shadow.camera.near = 0.5;
     key.shadow.camera.far = 22;
     key.shadow.bias = -0.0005;
@@ -325,14 +360,14 @@ export class ShelfEngine {
     this.scene.add(warmBounce);
 
     const wall = new THREE.Mesh(
-      new THREE.PlaneGeometry(34, 18),
+      new THREE.PlaneGeometry(34, 28),
       new THREE.MeshStandardMaterial({
         color: "#eee8db",
         roughness: 1,
         metalness: 0,
       }),
     );
-    wall.position.set(0, 5, -3.2);
+    wall.position.set(0, 4, -1.34);
     wall.receiveShadow = true;
     this.scene.add(wall);
 
@@ -345,16 +380,18 @@ export class ShelfEngine {
       }),
     );
     ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.24;
+    ground.position.y = -7.4;
     ground.receiveShadow = true;
     this.scene.add(ground);
 
     this.scene.add(this.shelfGroup);
     this.shelfGroup.add(this.shelfFurniture);
+    this.shelfFurniture.add(this.wallCabinet);
   }
 
   private createBooks() {
     const cabinetLayout = createCabinetLayout(this.booksData);
+    this.cabinetLayout = cabinetLayout;
 
     this.booksData.forEach((book, index) => {
       const runtime = this.createBook(
@@ -383,37 +420,455 @@ export class ShelfEngine {
   }
 
   private createShelves(layout: CabinetLayout) {
-    const shelfWidth = layout.interiorWidth + 8;
+    const horizontalTexture = loadWalnutTexture(this.renderer, 0, 4.4, 1.1);
+    const verticalTexture = loadWalnutTexture(
+      this.renderer,
+      Math.PI * 0.5,
+      3.2,
+      1,
+    );
+    this.shelfTextures.push(horizontalTexture, verticalTexture);
 
-    layout.shelfSurfaceYs.forEach((surfaceY, level) => {
-      const shelf = new THREE.Mesh(
-        new RoundedBoxGeometry(shelfWidth, 0.22, 1.72, 4, 0.045),
-        new THREE.MeshStandardMaterial({
-          color: shelfColor,
-          roughness: 0.62,
-          metalness: 0.03,
-        }),
-      );
-      shelf.name = `continuousShelf:${level}`;
-      shelf.position.set(0, surfaceY - 0.14, 0);
-      shelf.castShadow = true;
-      shelf.receiveShadow = true;
-      this.shelfFurniture.add(shelf);
-
-      const shelfEdge = new THREE.Mesh(
-        new RoundedBoxGeometry(shelfWidth, 0.12, 0.16, 3, 0.025),
-        new THREE.MeshPhysicalMaterial({
-          color: "#4b3429",
-          roughness: 0.46,
-          clearcoat: 0.14,
-          clearcoatRoughness: 0.5,
-        }),
-      );
-      shelfEdge.name = `continuousShelfEdge:${level}`;
-      shelfEdge.position.set(0, surfaceY - 0.08, 0.85);
-      shelfEdge.castShadow = true;
-      this.shelfFurniture.add(shelfEdge);
+    const horizontalMaterial = new THREE.MeshPhysicalMaterial({
+      map: horizontalTexture,
+      color: walnutColor,
+      emissive: new THREE.Color("#4b2b1b"),
+      emissiveIntensity: 0.32,
+      roughness: 0.62,
+      metalness: 0.01,
+      clearcoat: 0.08,
+      clearcoatRoughness: 0.72,
     });
+    const verticalMaterial = horizontalMaterial.clone();
+    verticalMaterial.map = verticalTexture;
+    const edgeMaterial = new THREE.MeshPhysicalMaterial({
+      color: walnutEdgeColor,
+      roughness: 0.58,
+      clearcoat: 0.08,
+      clearcoatRoughness: 0.68,
+    });
+    const boardDepth = 1.62;
+    const boardZ = -0.42;
+
+    const addCabinetBoard = (
+      name: string,
+      width: number,
+      height: number,
+      x: number,
+      y: number,
+      material: THREE.Material,
+    ) => {
+      const board = new THREE.Mesh(
+        new RoundedBoxGeometry(width, height, boardDepth, 4, 0.025),
+        material,
+      );
+      board.name = name;
+      board.position.set(x, y, boardZ);
+      board.castShadow = true;
+      board.receiveShadow = true;
+      this.wallCabinet.add(board);
+    };
+
+    for (let boundary = 0; boundary <= layout.wallRowCount; boundary += 1) {
+      const surfaceY = cabinetBaseTop + boundary * layout.cellHeight;
+      const isTop = boundary === layout.wallRowCount;
+      addCabinetBoard(
+        `walnutCabinetHorizontal:${boundary}`,
+        layout.outerWidth,
+        cabinetShelfThickness,
+        0,
+        surfaceY + (isTop ? 1 : -1) * cabinetShelfThickness * 0.5,
+        horizontalMaterial,
+      );
+    }
+
+    const cabinetBodyHeight =
+      layout.wallRowCount * layout.cellHeight + cabinetShelfThickness * 2;
+    const cabinetCenterY =
+      cabinetBaseTop + layout.wallRowCount * layout.cellHeight * 0.5;
+    [-1, 1].forEach((side) => {
+      addCabinetBoard(
+        `walnutCabinetSide:${side}`,
+        cabinetSideThickness,
+        cabinetBodyHeight,
+        side * (layout.interiorWidth * 0.5 + cabinetSideThickness * 0.5),
+        cabinetCenterY,
+        verticalMaterial,
+      );
+    });
+    for (let column = 1; column < layout.wallColumnCount; column += 1) {
+      addCabinetBoard(
+        `walnutCabinetDivider:${column}`,
+        cabinetSideThickness,
+        layout.wallRowCount * layout.cellHeight,
+        -layout.interiorWidth * 0.5 + column * layout.cellWidth,
+        cabinetCenterY,
+        verticalMaterial,
+      );
+    }
+
+    layout.shelfSurfaceYs.forEach((surfaceY, row) => {
+      const shelfCenterX = layout.shelfCenterXs[row];
+      const focusShelfWidth = layout.outerWidth;
+      const focusShelf = new THREE.Group();
+      focusShelf.name = `singleShelfFocus:${row}`;
+      focusShelf.visible = false;
+
+      const focusBoard = new THREE.Mesh(
+        new RoundedBoxGeometry(
+          focusShelfWidth,
+          0.18,
+          1.48,
+          4,
+          0.035,
+        ),
+        horizontalMaterial,
+      );
+      focusBoard.name = `singleWalnutShelf:${row}`;
+      focusBoard.position.set(shelfCenterX, surfaceY - 0.11, -0.34);
+      focusBoard.castShadow = true;
+      focusBoard.receiveShadow = true;
+      focusShelf.add(focusBoard);
+
+      const focusEdge = new THREE.Mesh(
+        new RoundedBoxGeometry(
+          focusShelfWidth - 0.12,
+          0.075,
+          0.08,
+          3,
+          0.016,
+        ),
+        edgeMaterial,
+      );
+      focusEdge.name = `singleWalnutShelfEdge:${row}`;
+      focusEdge.position.set(shelfCenterX, surfaceY - 0.085, 0.38);
+      focusEdge.castShadow = true;
+      focusShelf.add(focusEdge);
+      this.shelfFurniture.add(focusShelf);
+      this.focusShelfBoards[row] = focusShelf;
+
+      const shelfPickProxy = new THREE.Mesh(
+        new THREE.BoxGeometry(
+          layout.cellWidth - cabinetSideThickness,
+          layout.cellHeight - cabinetShelfThickness,
+          1.5,
+        ),
+        new THREE.MeshBasicMaterial({
+          transparent: true,
+          opacity: 0,
+          depthWrite: false,
+        }),
+      );
+      shelfPickProxy.name = `shelfPick:${row}`;
+      shelfPickProxy.userData.shelfRow = row;
+      shelfPickProxy.position.set(
+        shelfCenterX,
+        surfaceY + layout.cellHeight * 0.5,
+        -0.34,
+      );
+      this.wallCabinet.add(shelfPickProxy);
+      this.shelfPickTargets.push(shelfPickProxy);
+    });
+
+    this.createShelfDecor(layout);
+  }
+
+  private createShelfDecor(layout: CabinetLayout) {
+    const occupiedCells = new Set(layout.cellIndexes);
+    const emptyCells = Array.from(
+      { length: layout.wallCellCount },
+      (_, cellIndex) => cellIndex,
+    ).filter((cellIndex) => !occupiedCells.has(cellIndex));
+    if (!emptyCells.length) return;
+    const photoCell = emptyCells.reduce((closest, cellIndex) =>
+      Math.abs(cellIndex - (layout.wallCellCount - 1) * 0.5) <
+      Math.abs(closest - (layout.wallCellCount - 1) * 0.5)
+        ? cellIndex
+        : closest,
+    );
+
+    emptyCells.forEach((cellIndex, decorIndex) => {
+      const column = cellIndex % layout.wallColumnCount;
+      const band = Math.floor(cellIndex / layout.wallColumnCount);
+      const centerX =
+        (column - (layout.wallColumnCount - 1) * 0.5) * layout.cellWidth;
+      const surfaceY =
+        cabinetBaseTop +
+        (layout.wallRowCount - band - 1) * layout.cellHeight;
+      const decor =
+        cellIndex === photoCell
+          ? this.createPhotoFrame()
+          : decorIndex % 3 === 0
+            ? this.createCeramicVase(decorIndex)
+            : decorIndex % 3 === 1
+              ? this.createSculpture(decorIndex)
+              : this.createHorizontalBookStack(decorIndex);
+      decor.name =
+        cellIndex === photoCell
+          ? `familyPhotoFrame:${cellIndex}`
+          : `shelfDecor:${cellIndex}`;
+      decor.position.set(
+        centerX + ((cellIndex % 3) - 1) * 0.16,
+        surfaceY,
+        0.02,
+      );
+      this.wallCabinet.add(decor);
+    });
+  }
+
+  private createPhotoFrame() {
+    const group = new THREE.Group();
+    const photoTexture = new THREE.TextureLoader().load(
+      "/family-shelf-photo.jpg",
+    );
+    photoTexture.colorSpace = THREE.SRGBColorSpace;
+    photoTexture.anisotropy = Math.min(
+      8,
+      this.renderer.capabilities.getMaxAnisotropy(),
+    );
+    this.shelfTextures.push(photoTexture);
+
+    const frameMaterial = new THREE.MeshPhysicalMaterial({
+      color: "#b08a50",
+      roughness: 0.42,
+      metalness: 0.34,
+      clearcoat: 0.18,
+      clearcoatRoughness: 0.48,
+    });
+    const backing = new THREE.Mesh(
+      new RoundedBoxGeometry(1.32, 1.32, 0.075, 3, 0.018),
+      new THREE.MeshStandardMaterial({
+        color: "#2e241d",
+        roughness: 0.74,
+      }),
+    );
+    backing.position.set(0, 0.72, -0.015);
+    backing.castShadow = true;
+    group.add(backing);
+
+    const photo = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.12, 1.12),
+      new THREE.MeshBasicMaterial({ map: photoTexture }),
+    );
+    photo.position.set(0, 0.72, 0.03);
+    group.add(photo);
+
+    const photoPickProxy = new THREE.Mesh(
+      new THREE.BoxGeometry(1.5, 1.5, 0.22),
+      new THREE.MeshBasicMaterial({
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      }),
+    );
+    photoPickProxy.name = "familyPhotoPick";
+    photoPickProxy.position.set(0, 0.72, 0.08);
+    group.add(photoPickProxy);
+    this.photoPickTargets.push(photoPickProxy);
+
+    const horizontalBarGeometry = new RoundedBoxGeometry(
+      1.46,
+      0.095,
+      0.105,
+      3,
+      0.018,
+    );
+    const verticalBarGeometry = new RoundedBoxGeometry(
+      0.095,
+      1.28,
+      0.105,
+      3,
+      0.018,
+    );
+    [-1, 1].forEach((direction) => {
+      const horizontal = new THREE.Mesh(
+        horizontalBarGeometry,
+        frameMaterial,
+      );
+      horizontal.position.set(0, 0.72 + direction * 0.68, 0.075);
+      horizontal.castShadow = true;
+      group.add(horizontal);
+
+      const vertical = new THREE.Mesh(verticalBarGeometry, frameMaterial);
+      vertical.position.set(direction * 0.68, 0.72, 0.075);
+      vertical.castShadow = true;
+      group.add(vertical);
+    });
+    group.rotation.y = -0.055;
+    return group;
+  }
+
+  private createCeramicVase(variant: number) {
+    const group = new THREE.Group();
+    const profile = [
+      new THREE.Vector2(0.18, 0),
+      new THREE.Vector2(0.29, 0.08),
+      new THREE.Vector2(0.34, 0.42),
+      new THREE.Vector2(0.25, 0.78),
+      new THREE.Vector2(0.17, 0.92),
+      new THREE.Vector2(0.16, 1.1),
+      new THREE.Vector2(0.22, 1.14),
+    ];
+    const vase = new THREE.Mesh(
+      new THREE.LatheGeometry(profile, 32),
+      new THREE.MeshPhysicalMaterial({
+        color: variant % 2 === 0 ? "#6f887b" : "#b9795f",
+        roughness: 0.32,
+        metalness: 0,
+        clearcoat: 0.28,
+        clearcoatRoughness: 0.36,
+      }),
+    );
+    vase.castShadow = true;
+    vase.receiveShadow = true;
+    group.add(vase);
+    this.addFlowersToVase(group, variant);
+    return group;
+  }
+
+  private addFlowersToVase(group: THREE.Group, variant: number) {
+    const stemMaterial = new THREE.MeshStandardMaterial({
+      color: "#456846",
+      roughness: 0.76,
+    });
+    const leafMaterial = new THREE.MeshStandardMaterial({
+      color: variant % 2 === 0 ? "#5f805c" : "#61794f",
+      roughness: 0.72,
+    });
+    const petalColors =
+      variant % 2 === 0
+        ? ["#e9aa96", "#f4d2c0", "#d98977", "#f0bfab", "#df9d8d"]
+        : ["#e9bd4f", "#f5d578", "#d99c38", "#f0ca63", "#e4ae45"];
+
+    [
+      { x: -0.2, z: -0.01, height: 0.66, lean: 0.2 },
+      { x: -0.09, z: 0.015, height: 0.82, lean: 0.1 },
+      { x: 0, z: 0.035, height: 0.91, lean: 0 },
+      { x: 0.1, z: 0.015, height: 0.77, lean: -0.1 },
+      { x: 0.2, z: -0.01, height: 0.62, lean: -0.2 },
+    ].forEach((stemSpec, flowerIndex) => {
+      const stem = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.014, 0.018, stemSpec.height, 8),
+        stemMaterial,
+      );
+      stem.name = `flowerStem:${flowerIndex}`;
+      stem.position.set(
+        stemSpec.x,
+        1.11 + stemSpec.height * 0.5,
+        stemSpec.z,
+      );
+      stem.rotation.z = stemSpec.lean;
+      stem.castShadow = true;
+      group.add(stem);
+
+      [0.36, 0.58].forEach((heightRatio, leafIndex) => {
+        const leaf = new THREE.Mesh(
+          new THREE.SphereGeometry(0.082, 12, 8),
+          leafMaterial,
+        );
+        const side = (flowerIndex + leafIndex) % 2 === 0 ? -1 : 1;
+        leaf.name = `flowerLeaf:${flowerIndex}:${leafIndex}`;
+        leaf.scale.set(0.55, 1.65, 0.38);
+        leaf.position.set(
+          stemSpec.x + side * 0.06,
+          1.11 + stemSpec.height * heightRatio,
+          stemSpec.z + 0.014,
+        );
+        leaf.rotation.z = stemSpec.lean + side * 0.72;
+        leaf.castShadow = true;
+        group.add(leaf);
+      });
+
+      const blossom = new THREE.Group();
+      blossom.name = `flowerBlossom:${flowerIndex}`;
+      blossom.position.set(
+        stemSpec.x - Math.sin(stemSpec.lean) * stemSpec.height * 0.45,
+        1.11 + stemSpec.height,
+        stemSpec.z + 0.025,
+      );
+      const petalMaterial = new THREE.MeshPhysicalMaterial({
+        color: petalColors[flowerIndex],
+        roughness: 0.55,
+        clearcoat: 0.06,
+      });
+      for (let petalIndex = 0; petalIndex < 6; petalIndex += 1) {
+        const angle = (petalIndex / 6) * Math.PI * 2;
+        const petal = new THREE.Mesh(
+          new THREE.SphereGeometry(0.105, 12, 8),
+          petalMaterial,
+        );
+        petal.name = `flowerPetal:${flowerIndex}:${petalIndex}`;
+        petal.scale.set(0.68, 1.2, 0.46);
+        petal.position.set(
+          Math.cos(angle) * 0.105,
+          Math.sin(angle) * 0.105,
+          0,
+        );
+        petal.rotation.z = angle - Math.PI * 0.5;
+        petal.castShadow = true;
+        blossom.add(petal);
+      }
+      const flowerCenter = new THREE.Mesh(
+        new THREE.SphereGeometry(0.06, 12, 8),
+        new THREE.MeshStandardMaterial({
+          color: "#8f6330",
+          roughness: 0.64,
+        }),
+      );
+      flowerCenter.position.z = 0.04;
+      blossom.add(flowerCenter);
+      group.add(blossom);
+    });
+  }
+
+  private createSculpture(variant: number) {
+    const group = new THREE.Group();
+    const stoneMaterial = new THREE.MeshStandardMaterial({
+      color: variant % 2 === 0 ? "#d0c1a8" : "#78918f",
+      roughness: 0.66,
+      metalness: 0.02,
+    });
+    const pedestal = new THREE.Mesh(
+      new RoundedBoxGeometry(0.72, 0.16, 0.54, 3, 0.035),
+      new THREE.MeshStandardMaterial({
+        color: "#9a7652",
+        roughness: 0.72,
+      }),
+    );
+    pedestal.position.y = 0.08;
+    pedestal.castShadow = true;
+    group.add(pedestal);
+
+    const sculpture = new THREE.Mesh(
+      new THREE.TorusKnotGeometry(0.27, 0.08, 64, 10, 2, 3),
+      stoneMaterial,
+    );
+    sculpture.position.y = 0.62;
+    sculpture.rotation.set(0.32, 0.4 + variant * 0.08, -0.18);
+    sculpture.castShadow = true;
+    group.add(sculpture);
+    return group;
+  }
+
+  private createHorizontalBookStack(variant: number) {
+    const group = new THREE.Group();
+    const colors = ["#7b3f32", "#c09b4b", "#456a6d"];
+    colors.forEach((color, index) => {
+      const book = new THREE.Mesh(
+        new RoundedBoxGeometry(1.28 - index * 0.08, 0.14, 0.82, 3, 0.025),
+        new THREE.MeshPhysicalMaterial({
+          color,
+          roughness: 0.72,
+          clearcoat: 0.04,
+        }),
+      );
+      book.position.set((index - 1) * 0.04, 0.07 + index * 0.145, 0);
+      book.rotation.y = (index - 1) * 0.055 + variant * 0.008;
+      book.castShadow = true;
+      book.receiveShadow = true;
+      group.add(book);
+    });
+    return group;
   }
 
   private centerInitialShelf() {
@@ -422,6 +877,7 @@ export class ShelfEngine {
     this.scrollIndex = initialIndex;
     this.targetScrollIndex = initialIndex;
     this.callbacks.onActiveIndex(initialIndex);
+    this.callbacks.onBrowseScope("wall", null);
   }
 
   private createBook(
@@ -434,6 +890,7 @@ export class ShelfEngine {
     const slot = new THREE.Group();
     slot.name = `bookSlot:${book.id}`;
     slot.position.set(placement.x, placement.y, cabinetBookInsetZ);
+    slot.rotation.z = placement.tilt;
 
     const content = new THREE.Group();
     content.name = `bookPresentation:${book.id}`;
@@ -627,20 +1084,21 @@ export class ShelfEngine {
       inspectionIdle,
       physical,
       assetHolder,
-     frontSurface,
-     titleDecal,
-     pickProxy,
-     livingMaterial,
-     backSurface,
-     row: placement.row,
-     x: placement.x,
-     width,
-     pose,
-     hover: 0,
-     targetHover: 0,
-     idleAmount: 0,
-     textures,
-     lazyTextures: [],
+      frontSurface,
+      titleDecal,
+      pickProxy,
+      livingMaterial,
+      backSurface,
+      row: placement.row,
+      x: placement.x,
+      shelfTilt: placement.tilt,
+      width,
+      pose,
+      hover: 0,
+      targetHover: 0,
+      idleAmount: 0,
+      textures,
+      lazyTextures: [],
     };
   }
 
@@ -656,7 +1114,7 @@ export class ShelfEngine {
   }
 
   private handleWheel = (event: WheelEvent) => {
-    if (this.mode !== "browse") return;
+    if (this.mode !== "browse" || this.browseScope === "wall") return;
     event.preventDefault();
     this.pendingFocusIndex = null;
     const now = performance.now();
@@ -702,7 +1160,7 @@ export class ShelfEngine {
         this.dragAxis = travelY > travelX ? "vertical" : "horizontal";
       }
 
-      if (this.dragAxis === "horizontal") {
+      if (this.dragAxis === "horizontal" && this.browseScope === "shelf") {
         const { first, last } = this.rowBoundsForIndex(this.activeIndex);
         this.targetScrollIndex = clamp(
           this.targetScrollIndex -
@@ -733,12 +1191,30 @@ export class ShelfEngine {
     if (this.canvas.hasPointerCapture(event.pointerId)) {
       this.canvas.releasePointerCapture(event.pointerId);
     }
-    if (this.mode === "browse" && completedVerticalSwipe) {
+    if (
+      this.mode === "browse" &&
+      this.browseScope === "shelf" &&
+      completedVerticalSwipe
+    ) {
       this.browseShelfBy(travelY < 0 ? 1 : -1);
     } else if (this.mode === "browse" && wasClick) {
       this.updatePointer(event);
-      const hit = this.raycastBook();
-      if (hit !== null) this.focusBook(hit);
+      if (this.browseScope === "wall" && this.raycastPhoto()) {
+        this.callbacks.onPhotoFocus(true);
+        this.dragAxis = null;
+        return;
+      }
+      const bookHit = this.raycastBook();
+      if (bookHit !== null) {
+        if (this.browseScope === "wall") {
+          this.browseShelfTo(this.runtimeBooks[bookHit].row);
+        } else {
+          this.focusBook(bookHit);
+        }
+      } else if (this.browseScope === "wall") {
+        const shelfHit = this.raycastShelf();
+        if (shelfHit !== null) this.browseShelfTo(shelfHit);
+      }
     }
     this.dragAxis = null;
   };
@@ -778,6 +1254,14 @@ export class ShelfEngine {
     }
     if (this.mode !== "browse") return;
 
+    if (this.browseScope === "wall") {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        this.browseShelfTo(this.runtimeBooks[this.activeIndex]?.row ?? 0);
+      }
+      return;
+    }
+
     if (event.key === "ArrowRight") {
       event.preventDefault();
       this.browseBy(1);
@@ -816,12 +1300,45 @@ export class ShelfEngine {
       : null;
   }
 
+  private raycastShelf() {
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    const hit = this.raycaster.intersectObjects(
+      this.shelfPickTargets,
+      false,
+    )[0];
+    return typeof hit?.object.userData.shelfRow === "number"
+      ? (hit.object.userData.shelfRow as number)
+      : null;
+  }
+
+  private raycastPhoto() {
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    return this.raycaster.intersectObjects(this.photoPickTargets, false).length > 0;
+  }
+
   private updateHover() {
+    const photoHit = this.browseScope === "wall" && this.raycastPhoto();
     const hit = this.raycastBook();
     this.runtimeBooks.forEach((book) => {
-      book.targetHover = book.index === hit ? 1 : 0;
+      book.targetHover =
+        this.browseScope === "wall"
+          ? book.row === (hit === null ? -1 : this.runtimeBooks[hit].row)
+            ? 1
+            : 0
+          : book.index === hit
+            ? 1
+            : 0;
     });
-    this.canvas.style.cursor = hit === null ? "grab" : "pointer";
+    const shelfHit =
+      this.browseScope === "wall" && hit === null
+        ? this.raycastShelf()
+        : null;
+    this.canvas.style.cursor =
+      photoHit || hit !== null || shelfHit !== null
+        ? "pointer"
+        : this.browseScope === "wall"
+          ? "default"
+          : "grab";
   }
 
   private footprintFor(
@@ -874,8 +1391,8 @@ export class ShelfEngine {
     book.content.position.z = pose.z;
     book.content.rotation.y = pose.yaw;
     book.content.scale.setScalar(pose.scale);
-   return true;
- }
+    return true;
+  }
 
   private ensureInspectionTextures(book: RuntimeBook) {
     if (book.lazyTextures.length > 0) return;
@@ -896,15 +1413,15 @@ export class ShelfEngine {
     book.lazyTextures.push(backTexture);
   }
 
-private beginFocus(index: number) {
-    this.ensureInspectionTextures(this.runtimeBooks[index]);
-   if (
+  private beginFocus(index: number) {
+    if (
       this.mode !== "browse" ||
       this.browseMotionPhase !== "idle" ||
       this.presentedIndex !== index
     ) {
       return;
     }
+    this.ensureInspectionTextures(this.runtimeBooks[index]);
     this.pendingFocusIndex = null;
     this.selectedIndex = index;
     this.focusProgress = 0;
@@ -1141,7 +1658,15 @@ private beginFocus(index: number) {
       book.hover = damp(book.hover, book.targetHover, 12, delta);
 
       const isSelected = book.index === this.selectedIndex;
-      book.content.visible = !isolated || isSelected;
+      const isInCurrentShelf =
+        this.browseScope === "wall" || book.row === this.focusedShelfRow;
+      book.content.visible = (!isolated && isInCurrentShelf) || isSelected;
+      book.slot.rotation.z = damp(
+        book.slot.rotation.z,
+        isSelected ? 0 : book.shelfTilt,
+        9,
+        delta,
+      );
       book.content.position.y = isSelected ? motionFocus * 0.04 : 0;
 
       const idleTarget =
@@ -1253,12 +1778,37 @@ private beginFocus(index: number) {
     return shelfSurfaceY + Math.min(1.16, cabinetRowSpacing * 0.46);
   }
 
+  private browseRowCenterX(index: number) {
+    const row = this.runtimeBooks[index]?.row ?? 0;
+    return this.cabinetLayout?.shelfCenterXs[row] ?? 0;
+  }
+
+  private wallCameraDistance() {
+    const layout = this.cabinetLayout;
+    if (!layout) return 16;
+    const width = Math.max(1, this.canvas.clientWidth);
+    const height = Math.max(1, this.canvas.clientHeight);
+    const verticalFov = THREE.MathUtils.degToRad(this.camera.fov);
+    const horizontalFov = 2 * Math.atan(Math.tan(verticalFov * 0.5) * (width / height));
+    const distanceForHeight =
+      (layout.wallHeight * 0.5 + 0.72) / Math.tan(verticalFov * 0.5);
+    const distanceForWidth =
+      (layout.wallWidth * 0.5 + 0.72) / Math.tan(horizontalFov * 0.5);
+    return Math.max(distanceForHeight, distanceForWidth) + 0.6;
+  }
+
   private updateBrowseFrame(index: number, delta = 0) {
     const isMobile = this.canvas.clientWidth < 760;
-    const book = this.runtimeBooks[index];
-    const rowCenter = this.browseRowCenter(index);
-    const targetShelfX = -(book?.x ?? 0);
-    const targetShelfY = browseTarget.y - rowCenter;
+    const layout = this.cabinetLayout;
+    const isWallView = this.browseScope === "wall";
+    const frameCenterX = isWallView
+      ? (layout?.wallCenterX ?? 0)
+      : this.browseRowCenterX(index);
+    const frameCenterY = isWallView
+      ? (layout?.wallCenterY ?? browseTarget.y)
+      : this.browseRowCenter(index);
+    const targetShelfX = browseTarget.x - frameCenterX;
+    const targetShelfY = browseTarget.y - frameCenterY;
     const blend = (current: number, target: number) =>
       delta > 0
         ? damp(current, target, this.reducedMotion ? 20 : 6.5, delta)
@@ -1275,7 +1825,7 @@ private beginFocus(index: number) {
     this.responsiveBrowseCamera.set(
       browseCamera.x,
       browseCamera.y,
-      isMobile ? 8.3 : browseCamera.z,
+      isWallView ? this.wallCameraDistance() : isMobile ? 8.3 : browseCamera.z,
     );
     this.responsiveBrowseTarget.set(
       browseTarget.x,
@@ -1288,12 +1838,10 @@ private beginFocus(index: number) {
     const width = Math.max(1, this.canvas.clientWidth);
     const height = Math.max(1, this.canvas.clientHeight);
     const dprCap = width < 760 ? 1.5 : 1.75;
-    this.updateBrowseFrame(this.activeIndex);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, dprCap));
     this.renderer.setSize(width, height, false);
-    this.camera.aspect = width / height;
-    this.camera.fov = width < 600 ? 33 : width < 920 ? 30 : 27;
-    this.camera.updateProjectionMatrix();
+    this.updateBrowseProjection();
+    this.updateBrowseFrame(this.activeIndex);
     if (this.mode === "browse" && this.focusProgress < 0.01) {
       this.camera.clearViewOffset();
       this.camera.position.copy(this.responsiveBrowseCamera);
@@ -1306,6 +1854,25 @@ private beginFocus(index: number) {
       this.frameFocusedBook(worldPosition);
     }
   };
+
+  private updateBrowseProjection() {
+    const width = Math.max(1, this.canvas.clientWidth);
+    const height = Math.max(1, this.canvas.clientHeight);
+    this.camera.aspect = width / height;
+    this.camera.fov =
+      this.browseScope === "wall"
+        ? width < 600
+          ? 42
+          : width < 920
+            ? 35
+            : 29
+        : width < 600
+          ? 33
+          : width < 920
+            ? 30
+          : 27;
+    this.camera.updateProjectionMatrix();
+  }
 
   private async loadStripeAssets() {
     try {
@@ -1520,8 +2087,45 @@ private beginFocus(index: number) {
     }
   }
 
+  private setBrowseScope(scope: BrowseScope, row: number | null) {
+    this.focusedShelfRow = scope === "shelf" ? row : null;
+    this.wallCabinet.visible = scope === "wall";
+    this.focusShelfBoards.forEach((shelf, shelfRow) => {
+      shelf.visible = scope === "shelf" && shelfRow === row;
+    });
+    if (this.browseScope === scope) {
+      this.callbacks.onBrowseScope(scope, row);
+      return;
+    }
+    this.browseScope = scope;
+    this.camera.clearViewOffset();
+    this.callbacks.onBrowseScope(scope, row);
+    this.updateBrowseProjection();
+  }
+
+  showWall() {
+    if (this.mode !== "browse") return;
+    this.pendingFocusIndex = null;
+    this.presentedIndex = null;
+    this.motionBookIndex = null;
+    this.browseMotionPhase = "idle";
+    this.browseMotionProgress = 0;
+    this.runtimeBooks.forEach((book) => {
+      this.commitBookPose(book, shelvedBookPose(this.motionLayout), false);
+      book.targetHover = 0;
+    });
+    this.setBrowseScope("wall", null);
+    this.callbacks.onStatus("Viewing the complete wall");
+  }
+
   browseShelfBy(direction: number) {
-    if (this.mode !== "browse" || direction === 0) return;
+    if (
+      this.mode !== "browse" ||
+      this.browseScope !== "shelf" ||
+      direction === 0
+    ) {
+      return;
+    }
     const currentIndex = clamp(
       Math.round(this.targetScrollIndex),
       0,
@@ -1540,6 +2144,10 @@ private beginFocus(index: number) {
     const targetIndex = centeredShelfBookIndex(this.runtimeBooks, Math.round(row));
     if (this.runtimeBooks[targetIndex]?.row === Math.round(row)) {
       this.setShelfPageIndex(targetIndex);
+      this.setBrowseScope("shelf", Math.round(row));
+      this.callbacks.onStatus(
+        `Viewing ${this.runtimeBooks[targetIndex].data.shelfGroupName ?? "shelf"}`,
+      );
     }
   }
 
@@ -1553,6 +2161,11 @@ private beginFocus(index: number) {
   browseTo(index: number) {
     if (this.mode !== "browse") return;
     const next = clamp(Math.round(index), 0, this.runtimeBooks.length - 1);
+    if (this.browseScope === "wall") {
+      this.browseShelfTo(this.runtimeBooks[next].row);
+      this.targetScrollIndex = next;
+      return;
+    }
     const current = this.runtimeBooks[
       clamp(Math.round(this.targetScrollIndex), 0, this.runtimeBooks.length - 1)
     ];
@@ -1568,6 +2181,10 @@ private beginFocus(index: number) {
   focusBook(index = this.activeIndex) {
     if (this.mode !== "browse") return;
     const next = clamp(Math.round(index), 0, this.runtimeBooks.length - 1);
+    if (this.browseScope === "wall") {
+      this.browseShelfTo(this.runtimeBooks[next].row);
+      return;
+    }
     this.targetScrollIndex = next;
     this.scrollIndex = next;
     this.activeIndex = next;
@@ -1590,7 +2207,11 @@ private beginFocus(index: number) {
       this.callbacks.onStatus("Opening cancelled");
       return;
     }
-    if (this.mode === "browse" || this.mode === "returning") return;
+    if (this.mode === "browse") {
+      if (this.browseScope === "shelf") this.showWall();
+      return;
+    }
+    if (this.mode === "returning") return;
     this.controls.enabled = false;
     this.mode = "returning";
     this.callbacks.onMode(this.mode, this.selectedIndex);
@@ -1636,6 +2257,7 @@ private beginFocus(index: number) {
     const info = this.renderer.info;
     return {
       mode: this.mode,
+      browseScope: this.browseScope,
       activeIndex: this.activeIndex,
       selectedIndex: this.selectedIndex,
       books: this.runtimeBooks.length,
@@ -1650,6 +2272,7 @@ private beginFocus(index: number) {
       collisionRejects: this.collisionRejects,
       lastCollisionPair: this.lastCollisionPair,
       currentCollision: this.findAnyCollision(),
+      wallColumns: this.cabinetLayout?.wallColumnCount ?? 1,
       canvas: {
         width: this.canvas.width,
         height: this.canvas.height,
@@ -1681,10 +2304,11 @@ private beginFocus(index: number) {
         : [object.material];
       materials.forEach((material) => material?.dispose());
     });
-   this.runtimeBooks.forEach((book) => {
-     book.textures.forEach((texture) => texture.dispose());
-     book.lazyTextures.forEach((texture) => texture.dispose());
-   });
+    this.runtimeBooks.forEach((book) => {
+      book.textures.forEach((texture) => texture.dispose());
+      book.lazyTextures.forEach((texture) => texture.dispose());
+    });
+    this.shelfTextures.forEach((texture) => texture.dispose());
     this.stripeTextures.forEach((texture) => texture.dispose());
     this.stripeTextureCache.clear();
     this.stripeTextures.clear();

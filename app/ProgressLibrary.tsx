@@ -1,10 +1,15 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { catalog as fallbackCatalog } from "./catalog";
 import { loadLocalCatalog, type CatalogShelf } from "./load-catalog";
 import { arrangeBooksForShelves, createCabinetLayout } from "./shelf-layout";
-import { ShelfEngine, type ShelfMode } from "./ShelfEngine";
+import {
+  ShelfEngine,
+  type BrowseScope,
+  type ShelfMode,
+} from "./ShelfEngine";
 import { siteConfig } from "./site-config";
 
 function ArrowIcon({ direction }: { direction: "left" | "right" }) {
@@ -29,6 +34,8 @@ export function ProgressLibrary() {
   const [activeIndex, setActiveIndex] = useState(0);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [mode, setMode] = useState<ShelfMode>("browse");
+  const [browseScope, setBrowseScope] = useState<BrowseScope>("wall");
+  const [photoOpen, setPhotoOpen] = useState(false);
   const [ready, setReady] = useState(false);
   const [status, setStatus] = useState("Preparing the complete catalog");
 
@@ -63,7 +70,7 @@ export function ProgressLibrary() {
       setSelectedIndex(null);
       setStatus(
         arrangedBooks.some((book) => book.source === "weread")
-          ? `正在装载 ${loadedCatalog.shelves.length} 层微信读书书架`
+          ? `正在装载 ${loadedCatalog.shelves.length} 组微信读书书架`
           : "Preparing the complete catalog",
       );
       await document.fonts.ready;
@@ -75,6 +82,8 @@ export function ProgressLibrary() {
           setMode(nextMode);
           setSelectedIndex(index);
         },
+        onBrowseScope: (scope) => setBrowseScope(scope),
+        onPhotoFocus: setPhotoOpen,
         onStatus: setStatus,
         onReady: () => setReady(true),
       });
@@ -89,10 +98,21 @@ export function ProgressLibrary() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!photoOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPhotoOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [photoOpen]);
+
   return (
     <main
       className={`press-experience ${ready ? "is-ready" : ""} ${
         isFocused ? "is-focused" : "is-browsing"
+      } ${browseScope === "wall" ? "is-wall-view" : "is-shelf-view"} ${
+        photoOpen ? "is-photo-open" : ""
       }`}
     >
       <canvas
@@ -101,8 +121,43 @@ export function ProgressLibrary() {
         data-testid="shelf-canvas"
         role="application"
         tabIndex={0}
-        aria-label={`Interactive shelf with ${shelves.length} groups and ${books.length} books. Swipe vertically to change shelf, click a spine to open a book, or use the shelf menu for quick navigation.`}
+        aria-label={`Interactive walnut wall with ${shelfLayout.wallCellCount} open compartments, ${shelves.length} shelf groups, and ${books.length} books. Click a compartment to zoom in, then click a book to inspect it. Use Escape to return to the complete wall.`}
       />
+
+      <div
+        className={`photo-lightbox ${photoOpen ? "is-open" : ""}`}
+        data-photo-modal
+        data-open={photoOpen}
+        role="dialog"
+        aria-modal={photoOpen}
+        aria-hidden={!photoOpen}
+        aria-label="书架相框大图"
+        onClick={() => setPhotoOpen(false)}
+      >
+        <button
+          type="button"
+          className="photo-lightbox__close"
+          data-photo-close
+          onClick={() => setPhotoOpen(false)}
+        >
+          关闭
+        </button>
+        <figure
+          className="photo-lightbox__frame"
+          data-photo-frame
+          onClick={(event) => event.stopPropagation()}
+        >
+          <Image
+            src="/family-shelf-photo.jpg"
+            alt="一家三口在龙门前的合影"
+            width={1080}
+            height={1080}
+            sizes="min(78vw, 78vh)"
+            loading="eager"
+            style={{ width: "100%", height: "auto" }}
+          />
+        </figure>
+      </div>
 
       <header className="site-header">
         <div
@@ -121,6 +176,17 @@ export function ProgressLibrary() {
         </div>
       </header>
 
+      <button
+        type="button"
+        className="wall-view-button"
+        aria-label="返回整面书墙"
+        disabled={isFocused || browseScope === "wall"}
+        onClick={() => engineRef.current?.showWall()}
+      >
+        <ArrowIcon direction="left" />
+        <span>整面书墙</span>
+      </button>
+
       <nav
         className="shelf-switcher"
         aria-label="微信读书书架分组"
@@ -131,7 +197,11 @@ export function ProgressLibrary() {
             <button
               key={shelf.id}
               type="button"
-              className={shelfIndex === activeShelfRow ? "is-active" : ""}
+              className={
+                browseScope === "shelf" && shelfIndex === activeShelfRow
+                  ? "is-active"
+                  : ""
+              }
               aria-label={`切换到${shelf.name}书架`}
               disabled={isFocused}
               onClick={() => engineRef.current?.browseShelfTo(shelfIndex)}
@@ -153,8 +223,16 @@ export function ProgressLibrary() {
                 <button
                   key={shelf.id}
                   type="button"
-                  className={shelfIndex === activeShelfRow ? "is-active" : ""}
-                  aria-current={shelfIndex === activeShelfRow ? "page" : undefined}
+                  className={
+                    browseScope === "shelf" && shelfIndex === activeShelfRow
+                      ? "is-active"
+                      : ""
+                  }
+                  aria-current={
+                    browseScope === "shelf" && shelfIndex === activeShelfRow
+                      ? "page"
+                      : undefined
+                  }
                   disabled={isFocused}
                   title={
                     shelf.totalCount > displayedCount
@@ -192,15 +270,27 @@ export function ProgressLibrary() {
           ))}
         </div>
         <div className="input-hint" aria-hidden="true">
-          <span>SWIPE UP / DOWN</span>
-          <i />
-          <span>{activeShelf?.name ?? "SHELF"}</span>
-          <i />
-          <span>
-            LAYER {String(activeShelfRow + 1).padStart(2, "0")} / {String(shelves.length).padStart(2, "0")}
-          </span>
-          <i />
-          <span>CLICK BOOKS</span>
+          {browseScope === "wall" ? (
+            <>
+              <span>COMPLETE WALL</span>
+              <i />
+              <span>{String(shelfLayout.wallCellCount).padStart(2, "0")} WALNUT COMPARTMENTS</span>
+              <i />
+              <span>CLICK A COMPARTMENT</span>
+            </>
+          ) : (
+            <>
+              <span>SWIPE UP / DOWN</span>
+              <i />
+              <span>{activeShelf?.name ?? "SHELF"}</span>
+              <i />
+              <span>
+                LAYER {String(activeShelfRow + 1).padStart(2, "0")} / {String(shelves.length).padStart(2, "0")}
+              </span>
+              <i />
+              <span>CLICK BOOKS</span>
+            </>
+          )}
         </div>
       </nav>
 

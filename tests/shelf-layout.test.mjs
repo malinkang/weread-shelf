@@ -7,11 +7,13 @@ import {
   arrangeBooksForShelves,
   cabinetRowForCategory,
   cabinetRowCount,
+  cabinetWallColumnCount,
+  cabinetWallRowCount,
   centeredShelfBookIndex,
   createCabinetLayout,
 } from "../app/shelf-layout.ts";
 
-test("preserves thirteen WeRead shelf groups as thirteen visual layers", () => {
+test("distributes thirteen WeRead groups across a twenty-cell walnut wall", () => {
   const books = Array.from({ length: 13 }, (_, shelfGroupIndex) =>
     Array.from({ length: (shelfGroupIndex % 3) + 1 }, (_, bookIndex) => ({
       id: `${shelfGroupIndex}-${bookIndex}`,
@@ -36,6 +38,22 @@ test("preserves thirteen WeRead shelf groups as thirteen visual layers", () => {
       books.filter((book) => book.shelfGroupIndex === shelfGroupIndex).length,
     ),
   );
+  assert.equal(layout.wallColumnCount, cabinetWallColumnCount);
+  assert.equal(layout.wallRowCount, cabinetWallRowCount);
+  assert.equal(layout.wallCellCount, 20);
+  assert.equal(new Set(layout.cellIndexes).size, 13);
+  assert.equal(layout.wallCellCount - layout.cellIndexes.length, 7);
+  assert.ok(layout.placements.some((placement) => placement.tilt !== 0));
+  assert.equal(layout.shelfCenterXs.length, 13);
+  assert.equal(layout.shelfSurfaceYs.length, 13);
+  assert.equal(layout.shelfWidths.length, 13);
+  assert.equal(
+    new Set(layout.shelfSurfaceYs.map((y) => y.toFixed(2))).size,
+    cabinetWallRowCount,
+  );
+  assert.ok(layout.wallWidth > Math.max(...layout.shelfWidths));
+  assert.ok(layout.wallWidth > 15);
+  assert.ok(layout.wallHeight > 8);
 });
 
 test("starts each shelf on the book nearest its visual center", () => {
@@ -69,7 +87,7 @@ test("pages one shelf at a time while preserving the relative book position", ()
   assert.equal(adjacentShelfBookIndex(placements, 29, 1), 29);
 });
 
-test("distributes a 30-volume collection across three ordered shelves", () => {
+test("distributes a 30-volume collection across three ordered compartments", () => {
   const books = Array.from({ length: 30 }, (_, index) => ({
     height: 2.02 + (index % 5) * 0.04,
     thickness: 0.18 + (index % 4) * 0.025,

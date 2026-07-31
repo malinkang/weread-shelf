@@ -9,6 +9,7 @@ export type ShelfBookPlacement = {
   row: number;
   x: number;
   y: number;
+  tilt: number;
 };
 
 export type CabinetLayout = {
@@ -20,19 +21,36 @@ export type CabinetLayout = {
   outerHeight: number;
   rowBookCounts: number[];
   shelfSurfaceYs: number[];
+  shelfCenterXs: number[];
+  shelfWidths: number[];
+  wallColumnCount: number;
+  wallRowCount: number;
+  wallCellCount: number;
+  cellWidth: number;
+  cellHeight: number;
+  cellIndexes: number[];
+  wallCenterX: number;
+  wallCenterY: number;
+  wallWidth: number;
+  wallHeight: number;
 };
 
 export const cabinetRowCount = 3;
 export const cabinetBaseTop = 0.34;
 export const cabinetRowSpacing = 2.55;
-export const cabinetShelfThickness = 0.24;
-export const cabinetSideThickness = 0.3;
+export const cabinetShelfThickness = 0.19;
+export const cabinetSideThickness = 0.22;
 export const cabinetDepth = 1.9;
 export const cabinetBookInsetZ = 0.04;
+export const cabinetWallColumnCount = 5;
+export const cabinetWallRowCount = 4;
 
 const minimumInteriorWidth = 3.4;
 const rowPadding = 0.25;
 const bookGap = 0.075;
+const minimumCompartmentWidth = 3.18;
+const compartmentSideRoom = 0.72;
+const bookAlignments = [-1, 1, 0, -1, 0, 1, -1];
 
 const categoryRows = [
   new Set(["文学", "精品小说", "历史", "社会文化"]),
@@ -175,8 +193,12 @@ export function centeredShelfBookIndex(
   if (!rowBooks.length) return 0;
 
   if (rowBooks.every((placement) => Number.isFinite(placement.x))) {
+    const rowCenter =
+      ((rowBooks[0]?.x ?? 0) + (rowBooks[rowBooks.length - 1]?.x ?? 0)) *
+      0.5;
     return rowBooks.reduce((closest, candidate) =>
-      Math.abs(candidate.x ?? 0) < Math.abs(closest.x ?? 0)
+      Math.abs((candidate.x ?? 0) - rowCenter) <
+      Math.abs((closest.x ?? 0) - rowCenter)
         ? candidate
         : closest,
     ).index;
@@ -205,52 +227,116 @@ export function createCabinetLayout(
   const placements = new Array<ShelfBookPlacement>(books.length);
   const assignments = assignRows(books, normalizedRowCount);
   const rowBookCounts = Array(normalizedRowCount).fill(0);
-  let widestRow = 0;
-
-  for (let row = 0; row < normalizedRowCount; row += 1) {
+  const rows = Array.from({ length: normalizedRowCount }, (_, row) => {
     const rowBooks = books
       .map((book, index) => ({ book, index }))
       .filter(({ index }) => assignments[index] === row);
-    if (!rowBooks.length) continue;
     rowBookCounts[row] = rowBooks.length;
-
     const rowWidth =
       rowBooks.reduce((total, { book }) => total + book.thickness, 0) +
       bookGap * Math.max(0, rowBooks.length - 1);
-    widestRow = Math.max(widestRow, rowWidth);
-    let cursor = -rowWidth * 0.5;
-    const shelfFromBottom = normalizedRowCount - row - 1;
-    const shelfSurfaceY = cabinetBaseTop + shelfFromBottom * cabinetRowSpacing;
+    const maxBookHeight = Math.max(
+      0,
+      ...rowBooks.map(({ book }) => book.height),
+    );
+    return { row, rowBooks, rowWidth, maxBookHeight };
+  });
 
-    rowBooks.forEach(({ book, index }) => {
+  const wallColumnCount =
+    normalizedRowCount >= 10
+      ? cabinetWallColumnCount
+      : normalizedRowCount >= 5
+        ? 3
+        : 1;
+  const wallRowCount =
+    normalizedRowCount >= 10
+      ? cabinetWallRowCount
+      : Math.ceil(normalizedRowCount / wallColumnCount);
+  const wallCellCount = wallColumnCount * wallRowCount;
+  const cellWidth = Math.max(
+    minimumCompartmentWidth,
+    ...rows.map(({ rowWidth }) => rowWidth + compartmentSideRoom),
+  );
+  const cellIndexes = Array.from({ length: normalizedRowCount }, (_, row) =>
+    normalizedRowCount === 1
+      ? Math.floor((wallCellCount - 1) * 0.5)
+      : Math.round((row * (wallCellCount - 1)) / (normalizedRowCount - 1)),
+  );
+  const shelfCenterXs = Array(normalizedRowCount).fill(0);
+  const shelfSurfaceYs = Array(normalizedRowCount).fill(cabinetBaseTop);
+  const shelfWidths = Array(normalizedRowCount).fill(cellWidth);
+
+  rows.forEach(({ row, rowBooks, rowWidth }) => {
+    const cellIndex = cellIndexes[row];
+    const band = Math.floor(cellIndex / wallColumnCount);
+    const visualColumn = cellIndex % wallColumnCount;
+    const shelfCenterX =
+      (visualColumn - (wallColumnCount - 1) * 0.5) * cellWidth;
+    const shelfSurfaceY =
+      cabinetBaseTop +
+      (wallRowCount - band - 1) * cabinetRowSpacing;
+    const spareRoom = Math.max(0, cellWidth - rowWidth - rowPadding * 2);
+    const bookOffset =
+      bookAlignments[row % bookAlignments.length] * spareRoom * 0.38;
+    let cursor = shelfCenterX + bookOffset - rowWidth * 0.5;
+
+    shelfCenterXs[row] = shelfCenterX;
+    shelfSurfaceYs[row] = shelfSurfaceY;
+
+    const leanPairStart =
+      rowBooks.length >= 5
+        ? 1 + (row % Math.max(1, rowBooks.length - 3))
+        : -1;
+    rowBooks.forEach(({ book, index }, bookPosition) => {
       cursor += book.thickness * 0.5;
+      const tilt =
+        bookPosition === leanPairStart
+          ? -0.052
+          : bookPosition === leanPairStart + 1
+            ? 0.052
+            : 0;
       placements[index] = {
         row,
         x: cursor,
         y: shelfSurfaceY + book.height * 0.5,
+        tilt,
       };
       cursor += book.thickness * 0.5 + bookGap;
     });
-  }
+  });
 
   const interiorWidth = Math.max(
     minimumInteriorWidth,
-    widestRow + rowPadding * 2,
+    cellWidth * wallColumnCount,
   );
-  const shelfSurfaceYs = Array.from(
-    { length: normalizedRowCount },
-    (_, level) => cabinetBaseTop + level * cabinetRowSpacing,
-  );
+  const outerWidth = interiorWidth + cabinetSideThickness * 2;
+  const outerHeight =
+    cabinetRowSpacing * wallRowCount + cabinetShelfThickness * 2;
+  const wallWidth = outerWidth;
+  const wallHeight = outerHeight;
+  const wallCenterX = 0;
+  const wallCenterY = cabinetBaseTop + cabinetRowSpacing * wallRowCount * 0.5;
 
   return {
     rowCount: normalizedRowCount,
     booksPerRow: Math.max(...rowBookCounts, 1),
     placements,
     interiorWidth,
-    outerWidth: interiorWidth + cabinetSideThickness * 2,
-    outerHeight:
-      normalizedRowCount * cabinetRowSpacing + cabinetShelfThickness,
+    outerWidth,
+    outerHeight,
     rowBookCounts,
     shelfSurfaceYs,
+    shelfCenterXs,
+    shelfWidths,
+    wallColumnCount,
+    wallRowCount,
+    wallCellCount,
+    cellWidth,
+    cellHeight: cabinetRowSpacing,
+    cellIndexes,
+    wallCenterX,
+    wallCenterY,
+    wallWidth,
+    wallHeight,
   };
 }
